@@ -193,7 +193,9 @@ flakeradar's own database is per-machine by default, so in CI you need to
 persist it between runs (otherwise every run starts from zero history).
 Here's a minimal GitHub Actions example; a fuller version with quarantine
 sync and report upload lives in
-[`.github/workflows/example-usage.yml`](.github/workflows/example-usage.yml).
+[`examples/github-workflow-example.yml`](examples/github-workflow-example.yml)
+(copy it into your own project's `.github/workflows/`, it is not an active
+workflow in this repo).
 
 ```yaml
 - name: Restore flaky-test history
