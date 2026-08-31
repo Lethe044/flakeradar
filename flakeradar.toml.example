@@ -1,0 +1,43 @@
+# Copy this file to flakeradar.toml (or run `flakeradar init`) and adjust
+# as needed. Everything here can also be set with FLAKERADAR_* environment
+# variables, which take priority over this file - handy for CI secrets.
+
+# A test needs at least this many recorded runs before it gets classified
+# as stable/flaky/broken. Below this, it's reported as "insufficient_data".
+min_runs = 5
+
+# Flakiness score (0.0-1.0) at or above which a test is classified as flaky.
+flakiness_threshold = 0.15
+
+# Flakiness score at or above which `flakeradar quarantine sync` will
+# automatically add a test to the quarantine list.
+quarantine_threshold = 0.30
+
+# Where to write the SQLite history database. Defaults to
+# .flakeradar/history.db under the project root if left unset.
+# db_path = ".flakeradar/history.db"
+
+# Where to write/read the quarantine list. Defaults to
+# .flakeradar/quarantine.txt under the project root if left unset.
+# quarantine_path = ".flakeradar/quarantine.txt"
+
+# --- AI root-cause analysis (all optional) ---------------------------------
+# Leave as "none" to use flakeradar with zero AI cost - statistics, reports,
+# and quarantine management all work without this section.
+# Options: none, groq, gemini, ollama, openai, anthropic
+llm_provider = "none"
+
+# Model name. If omitted, a sensible free-tier default is used per provider
+# (check the provider's docs, since free-tier model names change over time).
+# llm_model = "llama-3.1-8b-instant"
+
+# API key. Prefer setting this via environment variable instead of committing
+# it here: FLAKERADAR_LLM_API_KEY, or the provider-specific alias
+# (GROQ_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY).
+# llm_api_key = ""
+
+# Override the API endpoint, e.g. to point at a self-hosted Ollama instance.
+# llm_base_url = "http://localhost:11434/api/chat"
+
+# --- Report ------------------------------------------------------------
+report_out = "flakeradar-report.html"

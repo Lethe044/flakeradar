@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flakeradar"
+version = "1.0.0"
+description = "Flaky test detection, historical tracking, and AI-assisted root cause analysis for pytest"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Lethe044" }]
+requires-python = ">=3.9"
+keywords = [
+    "pytest",
+    "testing",
+    "flaky-tests",
+    "ci",
+    "test-reliability",
+    "quality-assurance",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Framework :: Pytest",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = [
+    "pytest>=7.0",
+    "requests>=2.28",
+    "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "build>=1.0",
+    "twine>=4.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Lethe044/flakeradar"
+Repository = "https://github.com/Lethe044/flakeradar"
+Issues = "https://github.com/Lethe044/flakeradar/issues"
+Changelog = "https://github.com/Lethe044/flakeradar/blob/main/CHANGELOG.md"
+
+[project.scripts]
+flakeradar = "flakeradar.cli:main"
+
+[project.entry-points.pytest11]
+flakeradar = "flakeradar.plugin"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+flakeradar = ["py.typed"]
