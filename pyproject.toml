@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flakeradar"
-version = "1.0.0"
+version = "1.0.1"
 description = "Flaky test detection, historical tracking, and AI-assisted root cause analysis for pytest"
 readme = "README.md"
 license = { text = "MIT" }

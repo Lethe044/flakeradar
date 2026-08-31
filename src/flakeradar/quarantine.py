@@ -74,25 +74,27 @@ def sync_quarantine(
 
     - Tests scoring at/above `quarantine_threshold` are added (if not
       already manually pinned).
-    - Auto-added tests that have since dropped below the threshold are
-      removed.
+    - Auto-added tests that have since dropped below the threshold (or no
+      longer appear as flaky at all) are removed.
     - Manually pinned entries (no 'auto-added' marker) are never touched.
 
     Returns a dict with "added" and "removed" nodeid lists for reporting.
     """
     existing = read_quarantine(path)
-    manual: Set[str] = {nid for nid, e in existing.items() if not e.auto}
+    manual_entries: Dict[str, QuarantineEntry] = {
+        nid: e for nid, e in existing.items() if not e.auto
+    }
+    existing_auto_nodeids: Set[str] = {nid for nid, e in existing.items() if e.auto}
 
     today = time.strftime("%Y-%m-%d")
-    new_entries: Dict[str, QuarantineEntry] = {
-        nid: e for nid, e in existing.items() if nid in manual
-    }
+    new_entries: Dict[str, QuarantineEntry] = dict(manual_entries)
 
     added: List[str] = []
+    still_flaky_auto: Set[str] = set()
     for r in results:
         if r.classification != "flaky" or r.score < quarantine_threshold:
             continue
-        if r.nodeid in manual:
+        if r.nodeid in manual_entries:
             continue
         if r.nodeid not in existing:
             added.append(r.nodeid)
@@ -101,13 +103,9 @@ def sync_quarantine(
             comment=f"score={r.score:.2f}, auto-added {today}",
             auto=True,
         )
+        still_flaky_auto.add(r.nodeid)
 
-    still_flaky = {r.nodeid for r in results if r.classification == "flaky" and r.score >= quarantine_threshold}
-    removed: List[str] = []
-    for nid, entry in list(new_entries.items()):
-        if entry.auto and nid not in still_flaky:
-            removed.append(nid)
-            del new_entries[nid]
+    removed = sorted(existing_auto_nodeids - still_flaky_auto)
 
     write_quarantine(path, new_entries.values())
     return {"added": added, "removed": removed}

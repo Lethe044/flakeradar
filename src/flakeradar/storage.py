@@ -52,6 +52,10 @@ CREATE INDEX IF NOT EXISTS idx_results_run_id ON results (run_id);
 
 @dataclass
 class TestResult:
+    # Tells pytest not to try collecting this dataclass as a test class
+    # just because its name starts with "Test".
+    __test__ = False
+
     nodeid: str
     outcome: str  # "passed" | "failed" | "skipped" | "error"
     duration: float = 0.0
@@ -111,11 +115,12 @@ class Storage:
         source: str = "pytest",
         started_at: Optional[float] = None,
     ) -> None:
+        actual_started_at = started_at if started_at is not None else time.time()
         with self._conn:
             self._conn.execute(
                 "INSERT OR IGNORE INTO runs (run_id, started_at, git_sha, git_branch, source) "
                 "VALUES (?, ?, ?, ?, ?)",
-                (run_id, started_at or time.time(), git_sha, git_branch, source),
+                (run_id, actual_started_at, git_sha, git_branch, source),
             )
 
     def record_results(self, run_id: str, results: List[TestResult]) -> None:

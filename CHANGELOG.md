@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] - 2026-08-31
+
+### Fixed
+- `Storage.start_run`: a run started at `started_at=0.0` was silently
+  replaced with the current wall-clock time, because `0.0 or time.time()`
+  treats zero as falsy in Python. This corrupted run ordering for any
+  caller passing an explicit zero timestamp. Now only `None` triggers the
+  wall-clock fallback.
+- `sync_quarantine`: auto-quarantined tests that stabilized (no longer
+  flaky) were correctly removed from the quarantine file, but the reported
+  `removed` list stayed empty because of an ordering bug in how dropped
+  entries were tracked. The list now correctly reports every auto-added
+  test that was released.
+- Added `__test__ = False` to the internal `TestResult` dataclass so
+  pytest no longer emits a `PytestCollectionWarning` for it (it was being
+  mistaken for a test class because of its name).
+
 ## [1.0.0] - 2026-08-31
 
 ### Added
