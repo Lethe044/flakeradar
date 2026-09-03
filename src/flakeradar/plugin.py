@@ -20,6 +20,7 @@ from .config import load_config
 from .gitinfo import current_branch, current_sha
 from .quarantine import read_quarantine
 from .storage import Storage, TestResult
+from .summary import build_run_summary_markdown, write_github_step_summary
 
 _RUN_ID_KEY = "flakeradar_run_id"
 
@@ -133,6 +134,11 @@ def pytest_sessionfinish(session: "pytest.Session", exitstatus: int) -> None:
 
     store = Storage(fr_config.resolve_db_path())
     store.record_results(run_id, results)
+
+    summary_md = build_run_summary_markdown(
+        store, results, fr_config.min_runs, fr_config.flakiness_threshold
+    )
+    write_github_step_summary(summary_md)
     store.close()
 
     reporter = config.pluginmanager.get_plugin("terminalreporter")

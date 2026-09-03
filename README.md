@@ -3,8 +3,8 @@
 Flaky test detection, historical tracking, and AI-assisted root cause analysis for pytest.
 
 [![CI](https://github.com/Lethe044/flakeradar/actions/workflows/ci.yml/badge.svg)](https://github.com/Lethe044/flakeradar/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/pypi/v/flakeradar.svg)](https://pypi.org/project/flakeradar/)
-[![Python versions](https://img.shields.io/pypi/pyversions/flakeradar.svg)](https://pypi.org/project/flakeradar/)
+[![PyPI](https://img.shields.io/pypi/v/radarflake.svg)](https://pypi.org/project/radarflake/)
+[![Python versions](https://img.shields.io/pypi/pyversions/radarflake.svg)](https://pypi.org/project/radarflake/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 A test that fails one run in twenty and passes the other nineteen is worse
@@ -42,8 +42,13 @@ takes a different approach:
 ## Installation
 
 ```bash
-pip install flakeradar
+pip install radarflake
 ```
+
+The PyPI distribution is named `radarflake` (the original `flakeradar` name
+was already taken by an unrelated project). Everything else - the CLI
+command, the `import flakeradar` module name, and the `pytest --flakeradar`
+flag - is unaffected.
 
 Requires Python 3.9 or newer and pytest 7 or newer. No other required
 dependencies beyond `requests` for optional AI calls.
@@ -187,6 +192,51 @@ Entries without that marker are treated as manually pinned and are never
 touched by `sync`, so a human decision to hold a test back doesn't get
 silently reverted.
 
+Preview changes before committing to them:
+
+```bash
+flakeradar quarantine sync --dry-run
+```
+
+## Visibility in CI
+
+Two lightweight extras help flakiness stay visible without anyone having
+to remember to open the HTML report.
+
+**Job summaries.** When `pytest --flakeradar` runs inside GitHub Actions,
+it automatically writes a short Markdown summary of that run's failing
+tests - flagged as known-flaky, consistently-failing, or unexpectedly
+failing - to the job summary tab. No configuration needed; it activates
+whenever `GITHUB_STEP_SUMMARY` is set.
+
+**A status badge.** Generate a small, self-contained SVG badge showing the
+current flaky test count:
+
+```bash
+flakeradar badge --out flakeradar-badge.svg
+```
+
+The badge has no external service dependency, it's rendered entirely
+locally. Commit it or upload it as a CI artifact and reference it from
+your README:
+
+```markdown
+![flaky tests](flakeradar-badge.svg)
+```
+
+**A CI health gate.** Separate from per-test quarantine, you can fail a
+build outright if overall flakiness crosses a budget:
+
+```bash
+flakeradar report --max-flaky 5 --max-broken 0
+```
+
+**Machine-readable output.** For custom dashboards or other tooling:
+
+```bash
+flakeradar report --format json --out flakeradar-report.json
+```
+
 ## CI integration
 
 flakeradar's own database is per-machine by default, so in CI you need to
@@ -233,14 +283,17 @@ available option with comments.
 
 ```
 flakeradar init                          Scaffold a flakeradar.toml config file
-flakeradar report [--open] [--out PATH]  Generate the HTML flakiness report
+flakeradar report [--open] [--out PATH] [--format html|json] [--max-flaky N] [--max-broken N]
+                                          Generate the flakiness report
 flakeradar history <nodeid>              Print raw pass/fail history for one test
 flakeradar stress <path> [-k EXPR] [-n N] [--analyze]
                                           Run a test repeatedly right now
 flakeradar analyze <nodeid> [--source PATH]
                                           AI root cause analysis for one test
-flakeradar quarantine list|sync|add|remove
+flakeradar quarantine list|sync [--dry-run]|add|remove
                                           Manage the quarantine list
+flakeradar badge [--out PATH] [--label TEXT]
+                                          Generate an SVG flaky-test-count badge
 ```
 
 Run `flakeradar <command> --help` for the full set of flags on any

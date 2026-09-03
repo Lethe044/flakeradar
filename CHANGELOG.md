@@ -5,6 +5,43 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/).
 
+## [1.1.1] - 2026-09-01
+
+### Changed
+- Renamed the PyPI distribution to `radarflake` - the `flakeradar` name on
+  PyPI was already taken by an unrelated project. This is a packaging-only
+  change: install with `pip install radarflake`, everything else (the
+  `flakeradar` CLI command, `import flakeradar`, and the
+  `pytest --flakeradar` flag) is unchanged.
+
+## [1.1.0] - 2026-08-31
+
+### Added
+- GitHub Actions Job Summary integration: `pytest --flakeradar` now writes
+  a Markdown table of this run's non-passing tests (with their historical
+  classification - known flaky, consistently failing, or unexpectedly
+  failing) directly to the Actions job summary tab when running in CI.
+  No configuration needed - it activates automatically when
+  `GITHUB_STEP_SUMMARY` is set.
+- `flakeradar badge`: generates a self-contained SVG badge showing the
+  current flaky test count, with no external network call or hosted
+  service dependency. Colored green/yellow/red based on count.
+- `flakeradar report --format json`: machine-readable JSON export of the
+  same data shown in the HTML report, for custom dashboards or other
+  tooling.
+- `flakeradar report --max-flaky N` / `--max-broken N`: exit with a
+  non-zero status if the number of flaky or consistently-failing tests
+  exceeds a given budget, independent of per-test quarantine thresholds.
+  Useful as a CI gate on overall suite health.
+- `flakeradar quarantine sync --dry-run`: preview what would be added to
+  or removed from the quarantine list without writing any changes.
+
+### Fixed
+- Moved the downstream-usage example GitHub Actions workflow out of
+  `.github/workflows/` (it was being picked up and run as if it were
+  this repo's own CI). It now lives in `examples/github-workflow-example.yml`
+  as a copy-paste template only.
+
 ## [1.0.1] - 2026-08-31
 
 ### Fixed

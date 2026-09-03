@@ -12,13 +12,14 @@ from pathlib import Path
 from typing import List, Optional
 
 from . import __version__
+from .badge import badge_for_flaky_count
 from .clustering import cluster_failures
 from .config import Config, load_config
 from .gitinfo import current_branch, current_sha
 from .llm import LLMError, build_provider, provider_names
 from .llm.analyzer import try_analyze_test
 from .quarantine import QuarantineEntry, read_quarantine, sync_quarantine, write_quarantine
-from .report import generate_html_report, write_report
+from .report import generate_html_report, generate_json_report, write_report
 from .scoring import FlakinessResult, score_test
 from .storage import Storage, TestResult
 
@@ -109,11 +110,16 @@ def cmd_report(args: argparse.Namespace) -> int:
         print("No recorded test results yet. Run 'pytest --flakeradar' first.")
         return 1
 
-    html_content = generate_html_report(
-        results, histories, run_count, config.flakiness_threshold, window=args.window
-    )
-    out_path = Path(args.out or config.report_out)
-    write_report(out_path, html_content)
+    if args.format == "json":
+        content = generate_json_report(results, run_count, config.flakiness_threshold)
+        out_path = Path(args.out or "flakeradar-report.json")
+    else:
+        content = generate_html_report(
+            results, histories, run_count, config.flakiness_threshold, window=args.window
+        )
+        out_path = Path(args.out or config.report_out)
+
+    write_report(out_path, content)
     print(f"Report written to {out_path.resolve()}")
 
     flaky = [r for r in results if r.classification == "flaky"]
@@ -127,9 +133,17 @@ def cmd_report(args: argparse.Namespace) -> int:
         for r in sorted(broken, key=lambda r: -r.fail_rate)[:10]:
             print(f"  {_color(f'{r.fail_rate:.0%}', _RED)}  {r.nodeid}")
 
-    if args.open:
+    if args.open and args.format == "html":
         webbrowser.open(out_path.resolve().as_uri())
-    return 0
+
+    exit_code = 0
+    if args.max_flaky is not None and len(flaky) > args.max_flaky:
+        print(_color(f"\nFAIL: {len(flaky)} flaky test(s) exceeds --max-flaky {args.max_flaky}", _RED))
+        exit_code = 1
+    if args.max_broken is not None and len(broken) > args.max_broken:
+        print(_color(f"FAIL: {len(broken)} broken test(s) exceeds --max-broken {args.max_broken}", _RED))
+        exit_code = 1
+    return exit_code
 
 
 def cmd_history(args: argparse.Namespace) -> int:
@@ -274,6 +288,26 @@ def _print_analysis(analysis) -> None:
     print(f"  Suggested fix: {analysis.suggested_fix}")
 
 
+def cmd_badge(args: argparse.Namespace) -> int:
+    config = load_config()
+    db_path = config.resolve_db_path()
+    if not db_path.exists():
+        print(f"No history database found at {db_path}. Run 'pytest --flakeradar' first.")
+        return 1
+    store = Storage(db_path)
+    results = _compute_all_scores(store, config)
+    store.close()
+
+    flaky_count = sum(1 for r in results if r.classification == "flaky")
+    svg = badge_for_flaky_count(flaky_count, label=args.label)
+
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(svg, encoding="utf-8")
+    print(f"Badge written to {out_path.resolve()} ({flaky_count} flaky test(s))")
+    return 0
+
+
 def cmd_quarantine(args: argparse.Namespace) -> int:
     config = load_config()
     q_path = config.resolve_quarantine_path()
@@ -313,13 +347,16 @@ def cmd_quarantine(args: argparse.Namespace) -> int:
         store = Storage(db_path)
         results = _compute_all_scores(store, config)
         store.close()
-        diff = sync_quarantine(q_path, results, config.quarantine_threshold)
+        diff = sync_quarantine(q_path, results, config.quarantine_threshold, dry_run=args.dry_run)
+        prefix = "(dry run) " if args.dry_run else ""
         for nodeid in diff["added"]:
-            print(_color(f"+ quarantined {nodeid}", _YELLOW))
+            print(_color(f"{prefix}+ quarantined {nodeid}", _YELLOW))
         for nodeid in diff["removed"]:
-            print(_color(f"- released {nodeid} (no longer flaky)", _GREEN))
+            print(_color(f"{prefix}- released {nodeid} (no longer flaky)", _GREEN))
         if not diff["added"] and not diff["removed"]:
             print("Quarantine list is already up to date.")
+        elif args.dry_run:
+            print("\nNo changes written (--dry-run). Re-run without --dry-run to apply.")
         return 0
 
     return 1
@@ -334,11 +371,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.add_argument("--force", action="store_true", help="Overwrite an existing config file.")
     p_init.set_defaults(func=cmd_init)
 
-    p_report = sub.add_parser("report", help="Generate the HTML flakiness report from recorded history.")
-    p_report.add_argument("--out", default=None, help="Output HTML path (default: from config).")
-    p_report.add_argument("--open", action="store_true", help="Open the report in a browser after generating it.")
+    p_report = sub.add_parser("report", help="Generate the flakiness report from recorded history.")
+    p_report.add_argument("--out", default=None, help="Output path (default: from config, or format-specific default).")
+    p_report.add_argument("--format", choices=["html", "json"], default="html", help="Report format (default: html).")
+    p_report.add_argument("--open", action="store_true", help="Open the HTML report in a browser after generating it.")
     p_report.add_argument("--min-runs", type=int, default=None, help="Minimum runs before a test is classified.")
-    p_report.add_argument("--window", type=int, default=40, help="Number of most recent runs shown per sparkline.")
+    p_report.add_argument("--window", type=int, default=40, help="Number of most recent runs shown per sparkline (HTML only).")
+    p_report.add_argument("--max-flaky", type=int, default=None, help="Exit non-zero if more than N tests are flaky.")
+    p_report.add_argument("--max-broken", type=int, default=None, help="Exit non-zero if more than N tests are consistently failing.")
     p_report.set_defaults(func=cmd_report)
 
     p_history = sub.add_parser("history", help="Show the recorded pass/fail history for one test.")
@@ -364,6 +404,7 @@ def build_parser() -> argparse.ArgumentParser:
     q_sub = p_quarantine.add_subparsers(dest="qcmd", required=True)
     q_sub.add_parser("list", help="List quarantined tests.").set_defaults(func=cmd_quarantine)
     q_sync = q_sub.add_parser("sync", help="Recompute the quarantine list from recorded history.")
+    q_sync.add_argument("--dry-run", action="store_true", help="Show what would change without writing the file.")
     q_sync.set_defaults(func=cmd_quarantine)
     q_add = q_sub.add_parser("add", help="Manually pin a test to the quarantine list.")
     q_add.add_argument("nodeid")
@@ -372,6 +413,11 @@ def build_parser() -> argparse.ArgumentParser:
     q_remove = q_sub.add_parser("remove", help="Remove a test from the quarantine list.")
     q_remove.add_argument("nodeid")
     q_remove.set_defaults(func=cmd_quarantine)
+
+    p_badge = sub.add_parser("badge", help="Generate a self-contained SVG badge showing the flaky test count.")
+    p_badge.add_argument("--out", default="flakeradar-badge.svg", help="Output SVG path (default: flakeradar-badge.svg).")
+    p_badge.add_argument("--label", default="flaky tests", help="Badge label text (default: 'flaky tests').")
+    p_badge.set_defaults(func=cmd_badge)
 
     return parser
 

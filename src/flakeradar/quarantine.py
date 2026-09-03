@@ -69,6 +69,7 @@ def sync_quarantine(
     path: Path,
     results: List[FlakinessResult],
     quarantine_threshold: float,
+    dry_run: bool = False,
 ) -> Dict[str, List[str]]:
     """Recompute the quarantine list.
 
@@ -77,6 +78,8 @@ def sync_quarantine(
     - Auto-added tests that have since dropped below the threshold (or no
       longer appear as flaky at all) are removed.
     - Manually pinned entries (no 'auto-added' marker) are never touched.
+    - With `dry_run=True`, the file is left untouched and the returned
+      diff shows what *would* change.
 
     Returns a dict with "added" and "removed" nodeid lists for reporting.
     """
@@ -107,7 +110,8 @@ def sync_quarantine(
 
     removed = sorted(existing_auto_nodeids - still_flaky_auto)
 
-    write_quarantine(path, new_entries.values())
+    if not dry_run:
+        write_quarantine(path, new_entries.values())
     return {"added": added, "removed": removed}
 
 

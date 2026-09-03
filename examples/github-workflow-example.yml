@@ -22,7 +22,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install flakeradar
+          pip install radarflake
           pip install -e ".[dev]"   # your project's own dependencies
 
       - name: Restore flaky-test history across runs

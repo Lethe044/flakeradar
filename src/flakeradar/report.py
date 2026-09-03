@@ -8,6 +8,7 @@ correctly with no network access.
 from __future__ import annotations
 
 import html
+import json
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -178,3 +179,28 @@ def generate_html_report(
 def write_report(path: Path, html_content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(html_content, encoding="utf-8")
+
+
+def generate_json_report(results: List[FlakinessResult], run_count: int, threshold: float) -> str:
+    """Machine-readable summary, for custom dashboards or other tooling."""
+    payload = {
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "run_count": run_count,
+        "flakiness_threshold": threshold,
+        "tests": [
+            {
+                "nodeid": r.nodeid,
+                "classification": r.classification,
+                "score": r.score,
+                "total_runs": r.total_runs,
+                "pass_count": r.pass_count,
+                "fail_count": r.fail_count,
+                "other_count": r.other_count,
+                "fail_rate": r.fail_rate,
+                "transition_rate": r.transition_rate,
+                "last_outcome": r.last_outcome,
+            }
+            for r in sorted(results, key=lambda r: (-r.score, r.nodeid))
+        ],
+    }
+    return json.dumps(payload, indent=2)
