@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -16,6 +17,8 @@ from . import __version__
 from .badge import badge_for_flaky_count
 from .clustering import cluster_failures
 from .config import Config, load_config
+from .diff import diff_branches
+from .github_comment import build_comment_markdown, detect_pr_context, post_or_update_comment
 from .gitinfo import current_branch, current_sha
 from .junit_import import parse_junit_xml, run_id_for_import
 from .llm import LLMError, build_provider, provider_names
@@ -150,6 +153,22 @@ def cmd_report(args: argparse.Namespace) -> int:
         else:
             print(f"\nWebhook notification failed: {error}")
 
+    if args.github_comment:
+        ctx = detect_pr_context()
+        token = os.environ.get("GITHUB_TOKEN")
+        if not ctx:
+            print("\n--github-comment: not running in a GitHub Actions pull_request context, skipping.")
+        elif not token:
+            print("\n--github-comment: GITHUB_TOKEN environment variable not set, skipping.")
+        else:
+            owner, repo, pr_number = ctx
+            body = build_comment_markdown(flaky, broken)
+            ok, error = post_or_update_comment(owner, repo, pr_number, token, body)
+            if ok:
+                print(f"\nPosted summary comment to {owner}/{repo}#{pr_number}.")
+            else:
+                print(f"\nCould not post PR comment: {error}")
+
     if args.open and args.format == "html":
         webbrowser.open(out_path.resolve().as_uri())
 
@@ -195,8 +214,9 @@ def cmd_import_junit(args: argparse.Namespace) -> int:
         return 1
 
     run_id = args.run_id or run_id_for_import(path)
+    git_branch = args.git_branch or current_branch()
     store = Storage(config.resolve_db_path())
-    store.start_run(run_id=run_id, git_sha=args.git_sha, source="junit-import")
+    store.start_run(run_id=run_id, git_sha=args.git_sha, git_branch=git_branch, source="junit-import")
     store.record_results(run_id, results)
     store.close()
 
@@ -309,6 +329,14 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     if not db_path.exists():
         print(f"No history database found at {db_path}.")
         return 1
+
+    if args.all:
+        return _cmd_analyze_all(args, config, db_path)
+
+    if not args.nodeid:
+        print("Provide a nodeid, or use --all to analyze every flaky/broken test.")
+        return 1
+
     store = Storage(db_path)
     history = store.history_for(args.nodeid)
     store.close()
@@ -346,6 +374,63 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     return 1 if not clusters else 0
 
 
+def _cmd_analyze_all(args: argparse.Namespace, config: Config, db_path: Path) -> int:
+    store = Storage(db_path)
+    results = _compute_all_scores(store, config)
+    targets = [r for r in results if r.classification in ("flaky", "broken")]
+
+    if not targets:
+        print("No flaky or consistently failing tests to analyze.")
+        store.close()
+        return 0
+
+    try:
+        provider = build_provider(config)
+    except LLMError as exc:
+        print(f"Could not build LLM provider: {exc}")
+        store.close()
+        return 1
+    if provider is None:
+        print("No LLM provider configured. Set --llm-provider or FLAKERADAR_LLM_PROVIDER.")
+        store.close()
+        return 1
+
+    print(f"Analyzing {len(targets)} test(s)...\n")
+    sections = []
+    for r in sorted(targets, key=lambda r: -r.score):
+        history = store.history_for(r.nodeid)
+        longreprs = [h.longrepr for h in history if h.longrepr]
+        clusters = cluster_failures(longreprs)
+
+        print(f"{r.nodeid}  (score={r.score:.2f}, {r.classification})")
+        analysis, error = try_analyze_test(provider, r.nodeid, r, clusters)
+        if analysis:
+            _print_analysis(analysis)
+            sections.append(
+                f"## {r.nodeid}\n\n"
+                f"- Classification: {r.classification} (score {r.score:.2f})\n"
+                f"- Category: {analysis.category_label}\n"
+                f"- Confidence: {analysis.confidence}\n"
+                f"- Explanation: {analysis.explanation}\n"
+                f"- Suggested fix: {analysis.suggested_fix}\n"
+            )
+        else:
+            print(f"  AI analysis unavailable: {error}")
+            sections.append(
+                f"## {r.nodeid}\n\n"
+                f"- Classification: {r.classification} (score {r.score:.2f})\n"
+                f"- AI analysis unavailable: {error}\n"
+            )
+        print()
+
+    store.close()
+
+    if args.out:
+        Path(args.out).write_text("# flakeradar AI analysis\n\n" + "\n".join(sections), encoding="utf-8")
+        print(f"Written to {args.out}")
+    return 0
+
+
 def _print_analysis(analysis) -> None:
     print(f"\n{_color('AI root cause analysis', _BOLD)} (confidence: {analysis.confidence})")
     print(f"  Category:    {analysis.category_label}")
@@ -370,6 +455,107 @@ def cmd_badge(args: argparse.Namespace) -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(svg, encoding="utf-8")
     print(f"Badge written to {out_path.resolve()} ({flaky_count} flaky test(s))")
+    return 0
+
+
+def cmd_diff(args: argparse.Namespace) -> int:
+    config = load_config()
+    db_path = config.resolve_db_path()
+    if not db_path.exists():
+        print(f"No history database found at {db_path}. Run 'pytest --flakeradar' first.")
+        return 1
+
+    head = args.head or current_branch()
+    if not head:
+        print("Could not determine the current git branch. Pass --head explicitly.")
+        return 1
+
+    store = Storage(db_path)
+    result = diff_branches(store, args.baseline, head, config)
+    store.close()
+
+    if result.has_new_issues:
+        print(_color(f"New flakiness on '{head}' compared to '{args.baseline}':", _YELLOW))
+        for r in result.newly_flaky:
+            print(f"  {_color('FLAKY ', _YELLOW)} {r.nodeid} (score {r.score:.2f})")
+        for r in result.newly_broken:
+            print(f"  {_color('BROKEN', _RED)} {r.nodeid} (fail rate {r.fail_rate:.0%})")
+    else:
+        print(f"No new flakiness on '{head}' compared to '{args.baseline}'.")
+
+    if result.fixed:
+        print(_color(f"\nFixed since '{args.baseline}': {len(result.fixed)} test(s)", _GREEN))
+        for nodeid in result.fixed:
+            print(f"  {nodeid}")
+
+    if result.unchanged:
+        print(f"\n{len(result.unchanged)} test(s) flaky/broken on both branches (pre-existing, not new).")
+
+    if not (result.newly_flaky or result.newly_broken or result.fixed or result.unchanged):
+        print("\nNo overlapping test history between the two branches yet.")
+
+    if args.fail_on_new and result.has_new_issues:
+        return 1
+    return 0
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    config = load_config()
+    print(f"flakeradar {__version__}")
+    print(f"Python {sys.version.split()[0]}")
+
+    try:
+        import pytest as _pytest  # noqa: F401  (only used for the version string)
+
+        print(f"pytest: {_pytest.__version__}")
+    except ImportError:
+        print("pytest: not installed in this environment (needed to run the plugin, not the CLI itself)")
+
+    sha = current_sha()
+    branch = current_branch()
+    if sha:
+        print(f"git: OK (sha={sha}, branch={branch or 'unknown'})")
+    else:
+        print("git: not available, or not inside a git repository (history still works, just without git metadata)")
+
+    db_path = config.resolve_db_path()
+    if db_path.exists():
+        store = Storage(db_path)
+        run_count = store.run_count()
+        test_count = len(store.all_nodeids())
+        mode = store._conn.execute("PRAGMA journal_mode").fetchone()[0]
+        store.close()
+        size_kb = db_path.stat().st_size / 1024
+        print(
+            f"history db: {db_path} ({size_kb:.1f} KB, {run_count} run(s), "
+            f"{test_count} test(s) tracked, journal_mode={mode})"
+        )
+    else:
+        print(f"history db: not found at {db_path} (run 'pytest --flakeradar' at least once)")
+
+    q_path = config.resolve_quarantine_path()
+    if q_path.exists():
+        entries = read_quarantine(q_path)
+        print(f"quarantine: {q_path} ({len(entries)} entry/entries)")
+    else:
+        print(f"quarantine: none yet (would be created at {q_path})")
+
+    print(f"llm provider: {config.llm_provider}")
+    if config.llm_provider != "none":
+        print(f"  model: {config.default_llm_model()}")
+        needs_key = config.llm_provider in ("groq", "gemini", "openai", "anthropic")
+        if needs_key:
+            status = "set" if config.llm_api_key else "MISSING (set FLAKERADAR_LLM_API_KEY or the provider-specific env var)"
+            print(f"  api key: {status}")
+        if args.live:
+            try:
+                provider = build_provider(config)
+                provider.generate("Reply with only the word OK.", "ping")
+                print("  connectivity: OK (live call succeeded)")
+            except LLMError as exc:
+                print(f"  connectivity: FAILED ({exc})")
+
+    print("\nAll checks complete.")
     return 0
 
 
@@ -445,6 +631,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_report.add_argument("--max-flaky", type=int, default=None, help="Exit non-zero if more than N tests are flaky.")
     p_report.add_argument("--max-broken", type=int, default=None, help="Exit non-zero if more than N tests are consistently failing.")
     p_report.add_argument("--webhook", default=None, help="Slack-compatible webhook URL to post a summary to (overrides config).")
+    p_report.add_argument("--github-comment", action="store_true", help="Post/update a summary comment on the current GitHub pull request (requires running in Actions with GITHUB_TOKEN set).")
     p_report.set_defaults(func=cmd_report)
 
     p_history = sub.add_parser("history", help="Show the recorded pass/fail history for one test.")
@@ -458,9 +645,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_stress.add_argument("--analyze", action="store_true", help="Run AI root-cause analysis if flakiness is found.")
     p_stress.set_defaults(func=cmd_stress)
 
-    p_analyze = sub.add_parser("analyze", help="Run AI root-cause analysis for a specific test's recorded history.")
-    p_analyze.add_argument("nodeid", help="Test nodeid, e.g. tests/test_x.py::test_y")
-    p_analyze.add_argument("--source", default=None, help="Path to the test's source file, included as context.")
+    p_analyze = sub.add_parser("analyze", help="Run AI root-cause analysis for one test, or every flaky/broken test with --all.")
+    p_analyze.add_argument("nodeid", nargs="?", default=None, help="Test nodeid, e.g. tests/test_x.py::test_y (omit when using --all).")
+    p_analyze.add_argument("--source", default=None, help="Path to the test's source file, included as context (single-test mode only).")
+    p_analyze.add_argument("--all", action="store_true", help="Analyze every currently flaky/broken test instead of a single one.")
+    p_analyze.add_argument("--out", default=None, help="Write the consolidated Markdown results to a file (used with --all).")
     p_analyze.add_argument(
         "--llm-provider", default=None, choices=[*provider_names(), "none"], help="Override the configured LLM provider."
     )
@@ -496,7 +685,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_junit.add_argument("path", help="Path to a JUnit XML file.")
     p_junit.add_argument("--run-id", default=None, help="Override the generated run id.")
     p_junit.add_argument("--git-sha", default=None, help="Record a git sha alongside this run.")
+    p_junit.add_argument("--git-branch", default=None, help="Record a git branch alongside this run (defaults to the current branch if inside a git repo).")
     p_junit.set_defaults(func=cmd_import_junit)
+
+    p_diff = sub.add_parser("diff", help="Compare flakiness between two branches (e.g. a PR branch vs. main).")
+    p_diff.add_argument("--baseline", required=True, help="Baseline branch name, e.g. main.")
+    p_diff.add_argument("--head", default=None, help="Branch to compare against the baseline (defaults to the current git branch).")
+    p_diff.add_argument("--fail-on-new", action="store_true", help="Exit non-zero if the head branch has flakiness not present on the baseline.")
+    p_diff.set_defaults(func=cmd_diff)
+
+    p_doctor = sub.add_parser("doctor", help="Check your flakeradar setup (git, pytest, history db, LLM config).")
+    p_doctor.add_argument("--live", action="store_true", help="Also make a real API call to verify LLM provider connectivity.")
+    p_doctor.set_defaults(func=cmd_doctor)
 
     return parser
 

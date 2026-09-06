@@ -187,17 +187,31 @@ class Storage:
 
     # -- reads ------------------------------------------------------------
 
-    def all_nodeids(self) -> List[str]:
-        rows = self._conn.execute("SELECT DISTINCT nodeid FROM results").fetchall()
+    def all_nodeids(self, branch: Optional[str] = None) -> List[str]:
+        if branch is None:
+            rows = self._conn.execute("SELECT DISTINCT nodeid FROM results").fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT DISTINCT res.nodeid FROM results res "
+                "JOIN runs r ON res.run_id = r.run_id WHERE r.git_branch = ?",
+                (branch,),
+            ).fetchall()
         return [r["nodeid"] for r in rows]
 
-    def history_for(self, nodeid: str, limit: Optional[int] = None) -> List[HistoryEntry]:
+    def history_for(
+        self, nodeid: str, limit: Optional[int] = None, branch: Optional[str] = None
+    ) -> List[HistoryEntry]:
         query = (
             "SELECT r.run_id, r.started_at, r.git_sha, res.outcome, res.duration, res.longrepr "
             "FROM results res JOIN runs r ON res.run_id = r.run_id "
-            "WHERE res.nodeid = ? ORDER BY r.started_at ASC"
+            "WHERE res.nodeid = ?"
         )
-        rows = self._conn.execute(query, (nodeid,)).fetchall()
+        params: tuple = (nodeid,)
+        if branch is not None:
+            query += " AND r.git_branch = ?"
+            params = (nodeid, branch)
+        query += " ORDER BY r.started_at ASC"
+        rows = self._conn.execute(query, params).fetchall()
         entries = [
             HistoryEntry(
                 run_id=row["run_id"],

@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 # CLI command, and pytest flag are all still "flakeradar" - see
 # [project.scripts] and [tool.setuptools.packages.find] below.
 name = "radarflake"
-version = "1.2.0"
+version = "1.3.0"
 description = "Flaky test detection, historical tracking, and AI-assisted root cause analysis for pytest"
 readme = "README.md"
 license = { text = "MIT" }

@@ -91,11 +91,18 @@ def pytest_runtest_makereport(item: "pytest.Item", call: "pytest.CallInfo") -> N
 
     # Only record the "call" phase as pass/fail; setup/teardown errors are
     # recorded as "error" so they are distinguishable but still contribute
-    # to the flakiness signal.
+    # to the flakiness signal. Tests skipped before they even run (e.g. via
+    # @pytest.mark.skip or a skipif condition) only produce a "setup"
+    # report, never a "call" report, so that case is handled separately -
+    # otherwise marker-skipped tests would silently never appear in history
+    # at all, unlike an inline pytest.skip() call (which does go through
+    # "call" and was already covered).
     if report.when == "call":
         outcome_str = report.outcome  # passed | failed | skipped
     elif report.when in ("setup", "teardown") and report.failed:
         outcome_str = "error"
+    elif report.when == "setup" and report.skipped:
+        outcome_str = "skipped"
     else:
         return
 

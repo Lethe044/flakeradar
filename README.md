@@ -162,6 +162,13 @@ If `llm_provider` is left as `none` (the default), everything except
 `flakeradar analyze`'s AI section still works normally, the statistical
 output is always shown regardless of whether AI analysis succeeds.
 
+Got more than one flaky test piling up? Analyze all of them in one pass
+instead of calling `analyze` repeatedly:
+
+```bash
+flakeradar analyze --all --out flaky-analysis.md
+```
+
 ## Quarantining flaky tests
 
 Once a test is confirmed flaky, you usually don't want it blocking merges
@@ -249,6 +256,43 @@ Set it once in `flakeradar.toml` (`webhook_url = "..."`) or via
 `FLAKERADAR_WEBHOOK_URL` and it applies automatically to every
 `flakeradar report` run, no flag needed.
 
+**PR comments.** Post (and keep updated) a summary comment directly on the
+pull request that's being tested:
+
+```bash
+flakeradar report --github-comment
+```
+
+This only activates when running inside a GitHub Actions job triggered by
+a `pull_request` event, using the token GitHub already provides to the
+job (`github.token` / `GITHUB_TOKEN` - not a secret you have to create).
+The job needs `permissions: pull-requests: write`. See
+[`examples/pr-comment-workflow.yml`](examples/pr-comment-workflow.yml) for
+a complete example. Re-running on the same PR updates the existing
+comment instead of piling up new ones.
+
+## Comparing branches
+
+Separate from historical trend tracking, `flakeradar diff` answers a more
+specific question: did *this* branch introduce flakiness that doesn't
+exist on the baseline? It compares classification per test between two
+branches using the git branch already recorded with each run:
+
+```bash
+flakeradar diff --baseline main --head my-feature-branch --fail-on-new
+```
+
+This reports newly flaky or newly broken tests (present on `--head` but
+not on `--baseline`), tests that were flaky on the baseline but are fixed
+on `--head`, and pre-existing flakiness that's unchanged on both. Without
+`--head`, it uses the current git branch. `--fail-on-new` is opt-in - by
+default the command is informational only and always exits 0, so it's
+safe to try without risking an unexpected CI failure.
+
+Note this needs history recorded under both branch names already (from
+`pytest --flakeradar` runs, or `flakeradar import-junit`), so it's most
+useful once your baseline branch has accumulated some runs.
+
 ## Working with non-pytest suites and old CI logs
 
 flakeradar's live tracking (`pytest --flakeradar`) is pytest-specific, but
@@ -333,17 +377,33 @@ flakeradar stress <path> [-k EXPR] [-n N] [--analyze]
                                           Run a test repeatedly right now
 flakeradar analyze <nodeid> [--source PATH]
                                           AI root cause analysis for one test
+flakeradar analyze --all [--out PATH]    AI root cause analysis for every flaky/broken test
 flakeradar quarantine list|sync [--dry-run]|add|remove
                                           Manage the quarantine list
 flakeradar badge [--out PATH] [--label TEXT]
                                           Generate an SVG flaky-test-count badge
 flakeradar prune --keep N                Delete run history beyond the N most recent runs
-flakeradar import-junit <path> [--run-id ID] [--git-sha SHA]
+flakeradar import-junit <path> [--run-id ID] [--git-sha SHA] [--git-branch BRANCH]
                                           Import a JUnit XML report as a run
+flakeradar diff --baseline BRANCH [--head BRANCH] [--fail-on-new]
+                                          Compare flakiness between two branches
+flakeradar doctor [--live]                Check your setup (git, pytest, history db, LLM config)
 ```
 
 Run `flakeradar <command> --help` for the full set of flags on any
 subcommand.
+
+## Troubleshooting your setup
+
+```bash
+flakeradar doctor
+```
+
+Checks that git is available, whether pytest is installed, the state and
+size of your history database, whether a quarantine file exists, and
+whether your configured LLM provider looks correctly set up (add `--live`
+to make one real API call and confirm connectivity, rather than just
+checking that a key is present).
 
 ## FAQ
 

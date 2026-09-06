@@ -1,0 +1,50 @@
+# Example workflow for projects that want flakeradar to comment on pull
+# requests automatically. This file is intentionally kept OUTSIDE
+# .github/workflows/ so it never runs on its own in this repository. Copy
+# it into YOUR project as .github/workflows/flakeradar-pr.yml.
+name: flakeradar PR comment
+
+on:
+  pull_request:
+
+permissions:
+  pull-requests: write # required so the job can post/update a PR comment
+
+jobs:
+  flaky-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install radarflake
+          pip install -e ".[dev]"   # your project's own dependencies
+
+      - name: Restore flaky-test history
+        uses: actions/cache@v4
+        with:
+          path: .flakeradar/history.db
+          key: flakeradar-history-${{ github.base_ref }}
+          restore-keys: |
+            flakeradar-history-main
+
+      - name: Run tests with tracking
+        run: pytest --flakeradar --flakeradar-quarantine
+
+      - name: Save updated history
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: .flakeradar/history.db
+          key: flakeradar-history-${{ github.head_ref }}-${{ github.run_id }}
+
+      - name: Comment flakiness summary on the PR
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # no secret to configure - Actions provides this automatically
+        run: flakeradar report --github-comment

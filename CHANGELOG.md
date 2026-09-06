@@ -5,6 +5,39 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-09-01
+
+### Added
+- `flakeradar diff --baseline BRANCH [--head BRANCH] [--fail-on-new]`:
+  compares flakiness classification between two branches using the git
+  branch already recorded with each run, reporting newly flaky/broken
+  tests, fixed tests, and pre-existing (unchanged) flakiness. Informational
+  by default; `--fail-on-new` makes it a CI gate.
+- `flakeradar report --github-comment`: posts (and keeps updated) a
+  summary comment directly on a GitHub pull request, using the token
+  GitHub Actions already provides to the job - no secret to configure
+  beyond `permissions: pull-requests: write`. See
+  `examples/pr-comment-workflow.yml`.
+- `flakeradar analyze --all [--out PATH]`: runs AI root-cause analysis on
+  every currently flaky/broken test in one pass instead of one at a time,
+  optionally writing a consolidated Markdown report.
+- `flakeradar doctor [--live]`: checks git availability, pytest
+  installation, history database state, quarantine file presence, and LLM
+  provider configuration. `--live` additionally makes one real API call to
+  confirm provider connectivity.
+- `flakeradar import-junit` now also records the git branch (from
+  `--git-branch` or auto-detected), so imported historical data can
+  participate in `flakeradar diff` too.
+- `Storage.history_for` and `Storage.all_nodeids` accept an optional
+  `branch` filter, used internally by `diff` but also available for
+  custom tooling.
+
+### Fixed
+- Tests skipped before they run (e.g. via `@pytest.mark.skip` or a
+  `skipif` condition) are now recorded in history as "skipped". Previously
+  only `pytest.skip()` called from inside a test body was captured, so
+  marker-skipped tests silently never appeared in history at all.
+
 ## [1.2.0] - 2026-09-01
 
 ### Added

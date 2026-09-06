@@ -182,3 +182,108 @@ def test_report_html_includes_trend_section(tmp_path, monkeypatch):
     _run(["report"])
     html = (tmp_path / "flakeradar-report.html").read_text()
     assert "Failing tests per run" in html
+
+
+def test_diff_detects_new_flakiness(tmp_path, monkeypatch):
+    from flakeradar.storage import Storage
+
+    monkeypatch.chdir(tmp_path)
+    db_path = tmp_path / ".flakeradar" / "history.db"
+    store = Storage(db_path)
+    for i in range(10):
+        store.start_run(f"main{i}", started_at=float(i), git_branch="main")
+        store.record_results(f"main{i}", [TestResult(nodeid="t", outcome="passed")])
+    for i in range(10):
+        store.start_run(f"head{i}", started_at=100 + float(i), git_branch="pr-branch")
+        outcome = "passed" if i % 2 == 0 else "failed"
+        store.record_results(f"head{i}", [TestResult(nodeid="t", outcome=outcome)])
+    store.close()
+
+    rc = _run(["diff", "--baseline", "main", "--head", "pr-branch"])
+    assert rc == 0  # informational by default, no --fail-on-new
+
+    rc_fail = _run(["diff", "--baseline", "main", "--head", "pr-branch", "--fail-on-new"])
+    assert rc_fail == 1
+
+
+def test_diff_without_history_returns_error(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    rc = _run(["diff", "--baseline", "main", "--head", "other"])
+    assert rc == 1
+
+
+def test_doctor_runs_without_error(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    rc = _run(["doctor"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "flakeradar" in out
+    assert "history db: not found" in out
+
+
+def test_doctor_reports_existing_history(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    _seed(tmp_path)
+    rc = _run(["doctor"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "journal_mode=wal" in out
+
+
+def test_analyze_all_with_no_flaky_tests(tmp_path, monkeypatch, capsys):
+    from flakeradar.storage import Storage
+
+    monkeypatch.chdir(tmp_path)
+    db_path = tmp_path / ".flakeradar" / "history.db"
+    store = Storage(db_path)
+    for i in range(6):
+        store.start_run(f"run{i}", started_at=float(i))
+        store.record_results(f"run{i}", [TestResult(nodeid="t", outcome="passed")])
+    store.close()
+
+    rc = _run(["analyze", "--all"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "No flaky or consistently failing tests" in out
+
+
+def test_analyze_requires_nodeid_or_all(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    _seed(tmp_path)
+    rc = _run(["analyze"])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "--all" in out
+
+
+def test_analyze_all_writes_consolidated_markdown(tmp_path, monkeypatch):
+    import json as _json
+
+    from flakeradar.llm.base import LLMProvider
+
+    monkeypatch.chdir(tmp_path)
+    _seed(tmp_path)
+
+    class FakeProvider(LLMProvider):
+        name = "fake"
+
+        def generate(self, system_prompt, user_prompt):
+            return _json.dumps(
+                {
+                    "category": "timing_or_sleep",
+                    "confidence": "medium",
+                    "explanation": "looks timing related",
+                    "suggested_fix": "add a wait condition",
+                }
+            )
+
+    monkeypatch.setattr("flakeradar.cli.build_provider", lambda config: FakeProvider())
+
+    out_path = tmp_path / "analysis.md"
+    rc = _run(["analyze", "--all", "--out", str(out_path)])
+    assert rc == 0
+    assert out_path.exists()
+    content = out_path.read_text()
+    assert "flakeradar AI analysis" in content
+    assert "tests/test_x.py::test_flip" in content
+    assert "timing related" in content
