@@ -97,3 +97,88 @@ def test_quarantine_sync_without_dry_run_writes(tmp_path, monkeypatch):
     rc = _run(["quarantine", "sync"])
     assert rc == 0
     assert (tmp_path / ".flakeradar" / "quarantine.txt").exists()
+
+
+def test_prune_keeps_requested_number_of_runs(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _seed(tmp_path)
+    rc = _run(["prune", "--keep", "3"])
+    assert rc == 0
+    from flakeradar.storage import Storage
+
+    store = Storage(tmp_path / ".flakeradar" / "history.db")
+    assert store.run_count() == 3
+    store.close()
+
+
+def test_prune_without_history_returns_error(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    rc = _run(["prune", "--keep", "5"])
+    assert rc == 1
+
+
+def test_import_junit_records_results(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    xml_path = tmp_path / "results.xml"
+    xml_path.write_text(
+        '<testsuite name="s">'
+        '<testcase classname="a.b" name="test_ok" time="0.1"/>'
+        '<testcase classname="a.b" name="test_bad" time="0.2">'
+        '<failure message="boom">trace</failure></testcase>'
+        "</testsuite>"
+    )
+    rc = _run(["import-junit", str(xml_path)])
+    assert rc == 0
+
+    from flakeradar.storage import Storage
+
+    store = Storage(tmp_path / ".flakeradar" / "history.db")
+    nodeids = store.all_nodeids()
+    store.close()
+    assert "a.b::test_ok" in nodeids
+    assert "a.b::test_bad" in nodeids
+
+
+def test_import_junit_missing_file_returns_error(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    rc = _run(["import-junit", str(tmp_path / "nope.xml")])
+    assert rc == 1
+
+
+def test_import_junit_invalid_xml_returns_error(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    bad_path = tmp_path / "bad.xml"
+    bad_path.write_text("not valid xml <<<")
+    rc = _run(["import-junit", str(bad_path)])
+    assert rc == 1
+
+
+def test_report_webhook_flag_sends_notification(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    _seed(tmp_path)
+
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+        text = "ok"
+
+    def fake_post(url, json=None, timeout=None):
+        captured["url"] = url
+        captured["json"] = json
+        return FakeResponse()
+
+    monkeypatch.setattr("flakeradar.notify.requests.post", fake_post)
+    rc = _run(["report", "--webhook", "https://hooks.example.com/x"])
+    assert rc == 0
+    assert captured["url"] == "https://hooks.example.com/x"
+    out = capsys.readouterr().out
+    assert "Webhook notification sent" in out
+
+
+def test_report_html_includes_trend_section(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _seed(tmp_path)
+    _run(["report"])
+    html = (tmp_path / "flakeradar-report.html").read_text()
+    assert "Failing tests per run" in html

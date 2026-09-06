@@ -5,6 +5,29 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-09-01
+
+### Added
+- `flakeradar import-junit <path>`: import a JUnit XML report as a run in
+  history. Works with any test runner that can emit JUnit-style XML (Jest,
+  Go test, JUnit/Java, RSpec, and more), not just pytest, and can also be
+  used to backfill history from old CI artifacts predating adoption of the
+  pytest plugin.
+- `flakeradar prune --keep N`: delete old run history beyond the N most
+  recent runs, so the database doesn't grow unbounded on long-lived
+  projects.
+- `flakeradar report --webhook URL` (or a `webhook_url` in
+  `flakeradar.toml` / `FLAKERADAR_WEBHOOK_URL`): posts a Slack-compatible
+  summary of flaky and consistently-failing tests to a webhook after
+  generating a report.
+- HTML report now includes a trend section showing failing-test count per
+  run over time, in addition to the existing per-test sparklines.
+
+### Changed
+- `Storage` now opens its SQLite connection in WAL mode with a busy
+  timeout, so concurrent writers (e.g. multiple `pytest-xdist` workers
+  each recording results) no longer risk "database is locked" errors.
+
 ## [1.1.1] - 2026-09-01
 
 ### Changed

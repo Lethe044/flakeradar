@@ -237,6 +237,49 @@ flakeradar report --max-flaky 5 --max-broken 0
 flakeradar report --format json --out flakeradar-report.json
 ```
 
+**Chat notifications.** Post a summary to Slack (or any Slack-compatible
+incoming webhook, which also covers Discord and Mattermost) whenever you
+generate a report:
+
+```bash
+flakeradar report --webhook https://hooks.slack.com/services/...
+```
+
+Set it once in `flakeradar.toml` (`webhook_url = "..."`) or via
+`FLAKERADAR_WEBHOOK_URL` and it applies automatically to every
+`flakeradar report` run, no flag needed.
+
+## Working with non-pytest suites and old CI logs
+
+flakeradar's live tracking (`pytest --flakeradar`) is pytest-specific, but
+its history database isn't. `flakeradar import-junit` reads a JUnit XML
+report and records it as a run, which works with anything that can emit
+JUnit-style XML - Jest, Go test, JUnit/Java, RSpec, and most other test
+runners - and also lets you backfill history from old CI artifacts that
+predate adopting flakeradar:
+
+```bash
+flakeradar import-junit path/to/junit-results.xml
+flakeradar report --open
+```
+
+Run it once per historical CI run you want counted (e.g. loop over
+archived JUnit XML artifacts from the last few weeks) to seed enough
+history for meaningful scores immediately, instead of waiting for new
+runs to accumulate.
+
+## Keeping the database tidy
+
+On a long-lived project, the history database grows by one row per test
+per run. Trim it periodically (e.g. in a scheduled CI job) if that
+matters to you:
+
+```bash
+flakeradar prune --keep 500
+```
+
+This keeps the 500 most recent runs and drops everything older.
+
 ## CI integration
 
 flakeradar's own database is per-machine by default, so in CI you need to
@@ -294,6 +337,9 @@ flakeradar quarantine list|sync [--dry-run]|add|remove
                                           Manage the quarantine list
 flakeradar badge [--out PATH] [--label TEXT]
                                           Generate an SVG flaky-test-count badge
+flakeradar prune --keep N                Delete run history beyond the N most recent runs
+flakeradar import-junit <path> [--run-id ID] [--git-sha SHA]
+                                          Import a JUnit XML report as a run
 ```
 
 Run `flakeradar <command> --help` for the full set of flags on any
@@ -308,8 +354,9 @@ any suite where the tests themselves take more than a few milliseconds
 each.
 
 **Does it work with `pytest-xdist`?**
-Yes, results from parallel workers are recorded the same way as a
-sequential run. Note that `--flakeradar-quarantine` marks are applied at
+Yes. `Storage` opens SQLite in WAL mode with a busy timeout, so multiple
+worker processes recording results concurrently don't hit "database is
+locked" errors. Note that `--flakeradar-quarantine` marks are applied at
 collection time on each worker, so quarantine changes made mid-run by
 another process won't retroactively apply within that same session.
 

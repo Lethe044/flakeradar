@@ -47,3 +47,34 @@ def test_report_escapes_html_in_nodeid():
     html = generate_html_report([result], {nodeid: _history(outcomes)}, run_count=5, threshold=0.15)
     assert "<script>]" not in html
     assert "&lt;script&gt;" in html
+
+
+def test_report_includes_trend_section_when_run_summaries_given():
+    from flakeradar.storage import RunSummary
+
+    outcomes = ["passed"] * 5
+    result = score_test("t1", outcomes, min_runs=5)
+    summaries = [RunSummary(run_id=f"r{i}", started_at=float(i), git_sha=None, total=3, passed=3, failed=0) for i in range(4)]
+    html = generate_html_report(
+        [result], {"t1": _history(outcomes)}, run_count=4, threshold=0.15, run_summaries=summaries
+    )
+    assert "Failing tests per run" in html
+
+
+def test_report_omits_trend_section_without_run_summaries():
+    outcomes = ["passed"] * 5
+    result = score_test("t1", outcomes, min_runs=5)
+    html = generate_html_report([result], {"t1": _history(outcomes)}, run_count=5, threshold=0.15)
+    assert "Failing tests per run" not in html
+
+
+def test_json_report_contains_expected_fields():
+    from flakeradar.report import generate_json_report
+    import json as _json
+
+    outcomes = ["passed", "failed"] * 5
+    result = score_test("t1", outcomes, min_runs=5)
+    payload = _json.loads(generate_json_report([result], run_count=10, threshold=0.15))
+    assert payload["run_count"] == 10
+    assert payload["tests"][0]["nodeid"] == "t1"
+    assert payload["tests"][0]["classification"] == "flaky"

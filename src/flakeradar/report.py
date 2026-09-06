@@ -15,7 +15,7 @@ from typing import List, Optional
 
 from .clustering import cluster_failures
 from .scoring import FlakinessResult
-from .storage import HistoryEntry
+from .storage import HistoryEntry, RunSummary
 
 _OUTCOME_COLOR = {
     1: "#22c55e",  # pass
@@ -48,6 +48,32 @@ _CLASS_BADGE = {
     "stable": ("#dcfce7", "#166534", "STABLE"),
     "insufficient_data": ("#e5e7eb", "#374151", "LOW DATA"),
 }
+
+
+def _trend_svg(summaries: List[RunSummary], height: int = 56) -> str:
+    """Bar chart of failing-test count per run, oldest to newest, left to right."""
+    if not summaries:
+        return ""
+    max_failed = max((s.failed for s in summaries), default=0) or 1
+    n = len(summaries)
+    bar_w = max(600 / n, 2)
+    total_w = round(bar_w * n, 1)
+    bars = []
+    for i, s in enumerate(summaries):
+        x = round(i * bar_w, 1)
+        bar_h = round((s.failed / max_failed) * (height - 4), 1)
+        bar_h = max(bar_h, 1)
+        y = round(height - bar_h, 1)
+        color = "#ef4444" if s.failed > 0 else "#22c55e"
+        title = f"{s.failed}/{s.total} failed"
+        bars.append(
+            f'<rect x="{x}" y="{y}" width="{max(bar_w - 1, 1)}" height="{bar_h}" '
+            f'fill="{color}" opacity="0.85"><title>{html.escape(title)}</title></rect>'
+        )
+    return (
+        f'<svg viewBox="0 0 {total_w} {height}" width="100%" height="{height}" '
+        f'preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">{"".join(bars)}</svg>'
+    )
 
 _TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -82,6 +108,11 @@ _TEMPLATE = """<!DOCTYPE html>
   }}
   .score {{ font-variant-numeric: tabular-nums; }}
   footer {{ margin-top: 24px; color: #6b7280; font-size: 12px; }}
+  .trend {{
+    background: #131a22; border: 1px solid #1f2937; border-radius: 10px;
+    padding: 14px 18px; margin-bottom: 24px;
+  }}
+  .trend .l {{ font-size: 12px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px; }}
 </style>
 </head>
 <body>
@@ -95,6 +126,7 @@ _TEMPLATE = """<!DOCTYPE html>
     <div class="card"><div class="n" style="color:#22c55e">{stable_count}</div><div class="l">Stable</div></div>
   </div>
 
+{trend_section}
   <table id="results">
     <thead>
       <tr>
@@ -155,6 +187,7 @@ def generate_html_report(
     run_count: int,
     threshold: float,
     window: int = 40,
+    run_summaries: Optional[List[RunSummary]] = None,
 ) -> str:
     ordered = sorted(results, key=lambda r: (-r.score, r.nodeid))
     rows = "\n".join(_row_html(r.nodeid, r, histories.get(r.nodeid, []), window) for r in ordered)
@@ -163,6 +196,16 @@ def generate_html_report(
     broken = sum(1 for r in results if r.classification == "broken")
     stable = sum(1 for r in results if r.classification == "stable")
 
+    trend_section = ""
+    if run_summaries:
+        recent_summaries = run_summaries[-window:]
+        trend_section = (
+            '  <div class="trend">\n'
+            f'    <div class="l">Failing tests per run (most recent {len(recent_summaries)})</div>\n'
+            f"    {_trend_svg(recent_summaries)}\n"
+            "  </div>\n"
+        )
+
     return _TEMPLATE.format(
         generated_at=time.strftime("%Y-%m-%d %H:%M:%S"),
         run_count=run_count,
@@ -170,6 +213,7 @@ def generate_html_report(
         flaky_count=flaky,
         broken_count=broken,
         stable_count=stable,
+        trend_section=trend_section,
         rows=rows or "      <tr><td colspan=\"6\">No data yet - run pytest with --flakeradar first.</td></tr>",
         threshold=threshold,
         window=window,

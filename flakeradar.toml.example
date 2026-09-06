@@ -41,3 +41,8 @@ llm_provider = "none"
 
 # --- Report ------------------------------------------------------------
 report_out = "flakeradar-report.html"
+
+# --- Notifications (optional) -------------------------------------------
+# Slack-compatible incoming webhook URL (also works with Discord and
+# Mattermost). When set, `flakeradar report` posts a summary automatically.
+# webhook_url = "https://hooks.slack.com/services/..."

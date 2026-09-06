@@ -52,6 +52,9 @@ class Config:
     # Report
     report_out: str = "flakeradar-report.html"
 
+    # Notifications
+    webhook_url: Optional[str] = None
+
     def resolve_db_path(self) -> Path:
         if self.db_path:
             return Path(self.db_path)
@@ -110,6 +113,7 @@ def _apply_env(data: Dict[str, Any]) -> Dict[str, Any]:
         "FLAKERADAR_LLM_BASE_URL": "llm_base_url",
         "FLAKERADAR_LLM_TIMEOUT": "llm_timeout",
         "FLAKERADAR_REPORT_OUT": "report_out",
+        "FLAKERADAR_WEBHOOK_URL": "webhook_url",
     }
     for env_key, field_name in mapping.items():
         if env_key in os.environ and os.environ[env_key] != "":

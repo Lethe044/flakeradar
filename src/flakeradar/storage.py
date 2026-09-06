@@ -74,6 +74,16 @@ class HistoryEntry:
     longrepr: Optional[str]
 
 
+@dataclass
+class RunSummary:
+    run_id: str
+    started_at: float
+    git_sha: Optional[str]
+    total: int
+    passed: int
+    failed: int  # includes "error" outcomes
+
+
 class Storage:
     """Thin wrapper around a SQLite database file."""
 
@@ -82,6 +92,12 @@ class Storage:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.db_path))
         self._conn.row_factory = sqlite3.Row
+        # WAL mode lets multiple processes (e.g. pytest-xdist workers, each
+        # with their own Storage instance) read and write concurrently
+        # without "database is locked" errors; busy_timeout makes a writer
+        # wait for a lock instead of failing immediately.
+        self._conn.execute("PRAGMA journal_mode=WAL;")
+        self._conn.execute("PRAGMA busy_timeout=5000;")
         self._init_schema()
 
     def _init_schema(self) -> None:
@@ -200,6 +216,36 @@ class Storage:
     def run_count(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) AS c FROM runs").fetchone()
         return int(row["c"])
+
+    def run_summaries(self, limit: Optional[int] = None) -> List[RunSummary]:
+        """Per-run aggregate pass/fail counts, ordered oldest to newest.
+
+        Used for trend visualization - unlike `history_for`, which is
+        per-test, this answers "how many tests failed in each run".
+        """
+        query = (
+            "SELECT r.run_id, r.started_at, r.git_sha, "
+            "COUNT(*) AS total, "
+            "SUM(CASE WHEN res.outcome = 'passed' THEN 1 ELSE 0 END) AS passed, "
+            "SUM(CASE WHEN res.outcome IN ('failed', 'error') THEN 1 ELSE 0 END) AS failed "
+            "FROM runs r JOIN results res ON res.run_id = r.run_id "
+            "GROUP BY r.run_id ORDER BY r.started_at ASC"
+        )
+        rows = self._conn.execute(query).fetchall()
+        summaries = [
+            RunSummary(
+                run_id=row["run_id"],
+                started_at=row["started_at"],
+                git_sha=row["git_sha"],
+                total=row["total"],
+                passed=row["passed"] or 0,
+                failed=row["failed"] or 0,
+            )
+            for row in rows
+        ]
+        if limit:
+            summaries = summaries[-limit:]
+        return summaries
 
     def iter_all_history(self) -> Iterator[tuple]:
         """Yield (nodeid, [HistoryEntry, ...]) for every known test."""

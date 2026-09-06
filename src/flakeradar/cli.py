@@ -8,6 +8,7 @@ import sys
 import time
 import uuid
 import webbrowser
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import List, Optional
 
@@ -16,8 +17,10 @@ from .badge import badge_for_flaky_count
 from .clustering import cluster_failures
 from .config import Config, load_config
 from .gitinfo import current_branch, current_sha
+from .junit_import import parse_junit_xml, run_id_for_import
 from .llm import LLMError, build_provider, provider_names
 from .llm.analyzer import try_analyze_test
+from .notify import build_notification_text, send_webhook
 from .quarantine import QuarantineEntry, read_quarantine, sync_quarantine, write_quarantine
 from .report import generate_html_report, generate_json_report, write_report
 from .scoring import FlakinessResult, score_test
@@ -94,7 +97,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 
 def cmd_report(args: argparse.Namespace) -> int:
-    config = load_config(min_runs=args.min_runs)
+    config = load_config(min_runs=args.min_runs, webhook_url=args.webhook)
     db_path = config.resolve_db_path()
     if not db_path.exists():
         print(f"No history database found at {db_path}. Run 'pytest --flakeradar' first.")
@@ -103,6 +106,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     store = Storage(db_path)
     results = _compute_all_scores(store, config)
     histories = {r.nodeid: store.history_for(r.nodeid) for r in results}
+    run_summaries = store.run_summaries()
     run_count = store.run_count()
     store.close()
 
@@ -115,7 +119,12 @@ def cmd_report(args: argparse.Namespace) -> int:
         out_path = Path(args.out or "flakeradar-report.json")
     else:
         content = generate_html_report(
-            results, histories, run_count, config.flakiness_threshold, window=args.window
+            results,
+            histories,
+            run_count,
+            config.flakiness_threshold,
+            window=args.window,
+            run_summaries=run_summaries,
         )
         out_path = Path(args.out or config.report_out)
 
@@ -133,6 +142,14 @@ def cmd_report(args: argparse.Namespace) -> int:
         for r in sorted(broken, key=lambda r: -r.fail_rate)[:10]:
             print(f"  {_color(f'{r.fail_rate:.0%}', _RED)}  {r.nodeid}")
 
+    if config.webhook_url:
+        text = build_notification_text(flaky, broken)
+        ok, error = send_webhook(config.webhook_url, text)
+        if ok:
+            print("\nWebhook notification sent.")
+        else:
+            print(f"\nWebhook notification failed: {error}")
+
     if args.open and args.format == "html":
         webbrowser.open(out_path.resolve().as_uri())
 
@@ -144,6 +161,54 @@ def cmd_report(args: argparse.Namespace) -> int:
         print(_color(f"FAIL: {len(broken)} broken test(s) exceeds --max-broken {args.max_broken}", _RED))
         exit_code = 1
     return exit_code
+
+
+def cmd_prune(args: argparse.Namespace) -> int:
+    config = load_config()
+    db_path = config.resolve_db_path()
+    if not db_path.exists():
+        print(f"No history database found at {db_path}.")
+        return 1
+    store = Storage(db_path)
+    removed = store.prune_runs(keep_last_n=args.keep)
+    remaining = store.run_count()
+    store.close()
+    print(f"Removed {removed} old run(s). {remaining} run(s) remain (kept the {args.keep} most recent).")
+    return 0
+
+
+def cmd_import_junit(args: argparse.Namespace) -> int:
+    config = load_config()
+    path = Path(args.path)
+    if not path.is_file():
+        print(f"File not found: {path}")
+        return 1
+
+    try:
+        results = parse_junit_xml(path)
+    except ET.ParseError as exc:
+        print(f"Could not parse {path} as JUnit XML: {exc}")
+        return 1
+
+    if not results:
+        print(f"No <testcase> entries found in {path}.")
+        return 1
+
+    run_id = args.run_id or run_id_for_import(path)
+    store = Storage(config.resolve_db_path())
+    store.start_run(run_id=run_id, git_sha=args.git_sha, source="junit-import")
+    store.record_results(run_id, results)
+    store.close()
+
+    passed = sum(1 for r in results if r.outcome == "passed")
+    failed = sum(1 for r in results if r.outcome in ("failed", "error"))
+    skipped = sum(1 for r in results if r.outcome == "skipped")
+    print(
+        f"Imported {len(results)} test result(s) from {path} "
+        f"({passed} passed, {failed} failed/error, {skipped} skipped) as run '{run_id}'."
+    )
+    print("Run 'flakeradar report' to see it reflected in history.")
+    return 0
 
 
 def cmd_history(args: argparse.Namespace) -> int:
@@ -379,6 +444,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_report.add_argument("--window", type=int, default=40, help="Number of most recent runs shown per sparkline (HTML only).")
     p_report.add_argument("--max-flaky", type=int, default=None, help="Exit non-zero if more than N tests are flaky.")
     p_report.add_argument("--max-broken", type=int, default=None, help="Exit non-zero if more than N tests are consistently failing.")
+    p_report.add_argument("--webhook", default=None, help="Slack-compatible webhook URL to post a summary to (overrides config).")
     p_report.set_defaults(func=cmd_report)
 
     p_history = sub.add_parser("history", help="Show the recorded pass/fail history for one test.")
@@ -418,6 +484,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_badge.add_argument("--out", default="flakeradar-badge.svg", help="Output SVG path (default: flakeradar-badge.svg).")
     p_badge.add_argument("--label", default="flaky tests", help="Badge label text (default: 'flaky tests').")
     p_badge.set_defaults(func=cmd_badge)
+
+    p_prune = sub.add_parser("prune", help="Delete old run history, keeping only the N most recent runs.")
+    p_prune.add_argument("--keep", type=int, required=True, help="Number of most recent runs to keep.")
+    p_prune.set_defaults(func=cmd_prune)
+
+    p_junit = sub.add_parser(
+        "import-junit",
+        help="Import a JUnit XML report as a run in history (works with any test runner that emits JUnit XML).",
+    )
+    p_junit.add_argument("path", help="Path to a JUnit XML file.")
+    p_junit.add_argument("--run-id", default=None, help="Override the generated run id.")
+    p_junit.add_argument("--git-sha", default=None, help="Record a git sha alongside this run.")
+    p_junit.set_defaults(func=cmd_import_junit)
 
     return parser
 
