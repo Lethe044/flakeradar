@@ -5,6 +5,29 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-09-01
+
+### Added
+- `flakeradar slow [--top N] [--min-runs N]`: shows the slowest tests by
+  average recorded duration. Test durations were already being collected
+  on every result but had no way to be surfaced until now.
+- The HTML report now includes a "Slowest tests" section, and the JSON
+  report includes `avg_duration_seconds` / `max_duration_seconds` per test,
+  both using the same previously-unused duration data.
+- `flakeradar init --with-ci`: also scaffolds a starter
+  `.github/workflows/flakeradar.yml` (history caching, tracked test run,
+  quarantine sync, report upload) so new projects don't have to hand-write
+  a workflow from scratch. Existing files are left untouched unless
+  `--force` is passed.
+- `Config.validate()`: flags implausible configuration (thresholds outside
+  0.0-1.0, quarantine threshold lower than the flakiness threshold,
+  `min_runs` below 1, an unrecognized `llm_provider`). Surfaced via
+  `flakeradar doctor`, which now prints config warnings alongside its
+  other checks.
+- `flakeradar quarantine list --stale-days N` (default 30): flags
+  auto-quarantined tests that have sat unaddressed longer than N days, so
+  they don't get silently forgotten.
+
 ## [1.3.0] - 2026-09-01
 
 ### Added

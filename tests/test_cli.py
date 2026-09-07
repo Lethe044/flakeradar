@@ -287,3 +287,111 @@ def test_analyze_all_writes_consolidated_markdown(tmp_path, monkeypatch):
     assert "flakeradar AI analysis" in content
     assert "tests/test_x.py::test_flip" in content
     assert "timing related" in content
+
+
+def test_slow_command_ranks_by_average_duration(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    db_path = tmp_path / ".flakeradar" / "history.db"
+    store = Storage(db_path)
+    for i in range(4):
+        run_id = f"run{i}"
+        store.start_run(run_id, started_at=float(i))
+        store.record_results(
+            run_id,
+            [
+                TestResult(nodeid="slow_test", outcome="passed", duration=2.0),
+                TestResult(nodeid="fast_test", outcome="passed", duration=0.01),
+            ],
+        )
+    store.close()
+
+    rc = _run(["slow", "--top", "5"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    slow_idx = out.index("slow_test")
+    fast_idx = out.index("fast_test")
+    assert slow_idx < fast_idx  # slower test listed first
+
+
+def test_slow_command_without_history_returns_error(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    rc = _run(["slow"])
+    assert rc == 1
+
+
+def test_init_with_ci_scaffolds_workflow(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    rc = _run(["init", "--with-ci"])
+    assert rc == 0
+    workflow_path = tmp_path / ".github" / "workflows" / "flakeradar.yml"
+    assert workflow_path.exists()
+    assert "flakeradar" in workflow_path.read_text()
+
+
+def test_init_without_with_ci_does_not_create_workflow(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    rc = _run(["init"])
+    assert rc == 0
+    assert not (tmp_path / ".github" / "workflows" / "flakeradar.yml").exists()
+
+
+def test_init_with_ci_skips_existing_workflow_without_force(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    workflow_path = tmp_path / ".github" / "workflows" / "flakeradar.yml"
+    workflow_path.parent.mkdir(parents=True)
+    workflow_path.write_text("# custom content, do not overwrite")
+    rc = _run(["init", "--with-ci"])
+    assert rc == 0
+    assert workflow_path.read_text() == "# custom content, do not overwrite"
+    out = capsys.readouterr().out
+    assert "already exists" in out
+
+
+def test_init_with_ci_overwrites_existing_workflow_with_force(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    workflow_path = tmp_path / ".github" / "workflows" / "flakeradar.yml"
+    workflow_path.parent.mkdir(parents=True)
+    workflow_path.write_text("# custom content, do not overwrite")
+    rc = _run(["init", "--with-ci", "--force"])
+    assert rc == 0
+    assert "flakeradar" in workflow_path.read_text()
+    assert "custom content" not in workflow_path.read_text()
+
+
+def test_doctor_reports_config_warnings(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "flakeradar.toml").write_text("flakiness_threshold = 5.0\n")
+    rc = _run(["doctor"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "config warnings" in out
+    assert "flakiness_threshold" in out
+
+
+def test_doctor_reports_ok_for_default_config(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    rc = _run(["doctor"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "config: OK" in out
+
+
+def test_quarantine_list_flags_stale_entries(tmp_path, monkeypatch, capsys):
+    from datetime import datetime, timedelta, timezone
+
+    from flakeradar.quarantine import QuarantineEntry, write_quarantine
+
+    monkeypatch.chdir(tmp_path)
+    q_path = tmp_path / ".flakeradar" / "quarantine.txt"
+    old_date = (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%d")
+    write_quarantine(q_path, [QuarantineEntry(nodeid="old_flaky", comment=f"score=0.5, auto-added {old_date}", auto=True)])
+
+    rc = _run(["quarantine", "list"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "stale" in out
+
+    rc2 = _run(["quarantine", "list", "--stale-days", "120"])
+    assert rc2 == 0
+    out2 = capsys.readouterr().out
+    assert "stale" not in out2

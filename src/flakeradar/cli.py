@@ -24,7 +24,7 @@ from .junit_import import parse_junit_xml, run_id_for_import
 from .llm import LLMError, build_provider, provider_names
 from .llm.analyzer import try_analyze_test
 from .notify import build_notification_text, send_webhook
-from .quarantine import QuarantineEntry, read_quarantine, sync_quarantine, write_quarantine
+from .quarantine import QuarantineEntry, days_since_auto_added, read_quarantine, sync_quarantine, write_quarantine
 from .report import generate_html_report, generate_json_report, write_report
 from .scoring import FlakinessResult, score_test
 from .storage import Storage, TestResult
@@ -62,6 +62,61 @@ def _compute_all_scores(store: Storage, config: Config) -> List[FlakinessResult]
 # -- subcommands ------------------------------------------------------------
 
 
+_STARTER_WORKFLOW = """name: flakeradar
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  flaky-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install radarflake
+          pip install -e ".[dev]"   # adjust to however your project installs its own deps
+
+      - name: Restore flaky-test history
+        uses: actions/cache@v4
+        with:
+          path: .flakeradar/history.db
+          key: flakeradar-history-${{ github.ref_name }}
+          restore-keys: |
+            flakeradar-history-main
+
+      - name: Run tests with tracking + quarantine skip
+        run: pytest --flakeradar --flakeradar-quarantine
+
+      - name: Save updated history
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: .flakeradar/history.db
+          key: flakeradar-history-${{ github.ref_name }}-${{ github.run_id }}
+
+      - name: Update quarantine list and generate report
+        if: always()
+        run: |
+          flakeradar quarantine sync
+          flakeradar report --out flakeradar-report.html
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flakeradar-report
+          path: flakeradar-report.html
+"""
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     root = Path.cwd()
     toml_path = root / "flakeradar.toml"
@@ -92,6 +147,17 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     print(f"Created {toml_path}")
     print("Added .flakeradar/history.db to .gitignore (the db is per-machine; commit quarantine.txt instead).")
+
+    if args.with_ci:
+        workflow_path = root / ".github" / "workflows" / "flakeradar.yml"
+        if workflow_path.exists() and not args.force:
+            print(f"\n{workflow_path} already exists, left untouched (use --force to overwrite).")
+        else:
+            workflow_path.parent.mkdir(parents=True, exist_ok=True)
+            workflow_path.write_text(_STARTER_WORKFLOW, encoding="utf-8")
+            print(f"Created {workflow_path}")
+            print("Review the 'pip install -e \".[dev]\"' line - adjust it to match how your project installs its own dependencies.")
+
     print("\nNext steps:")
     print("  1. Run your suite with tracking on:   pytest --flakeradar")
     print("  2. Generate a report:                 flakeradar report --open")
@@ -110,6 +176,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     results = _compute_all_scores(store, config)
     histories = {r.nodeid: store.history_for(r.nodeid) for r in results}
     run_summaries = store.run_summaries()
+    duration_summaries = store.duration_summary()
     run_count = store.run_count()
     store.close()
 
@@ -118,7 +185,9 @@ def cmd_report(args: argparse.Namespace) -> int:
         return 1
 
     if args.format == "json":
-        content = generate_json_report(results, run_count, config.flakiness_threshold)
+        content = generate_json_report(
+            results, run_count, config.flakiness_threshold, duration_summaries=duration_summaries
+        )
         out_path = Path(args.out or "flakeradar-report.json")
     else:
         content = generate_html_report(
@@ -128,6 +197,7 @@ def cmd_report(args: argparse.Namespace) -> int:
             config.flakiness_threshold,
             window=args.window,
             run_summaries=run_summaries,
+            duration_summaries=duration_summaries,
         )
         out_path = Path(args.out or config.report_out)
 
@@ -180,6 +250,34 @@ def cmd_report(args: argparse.Namespace) -> int:
         print(_color(f"FAIL: {len(broken)} broken test(s) exceeds --max-broken {args.max_broken}", _RED))
         exit_code = 1
     return exit_code
+
+
+def cmd_slow(args: argparse.Namespace) -> int:
+    config = load_config()
+    db_path = config.resolve_db_path()
+    if not db_path.exists():
+        print(f"No history database found at {db_path}. Run 'pytest --flakeradar' first.")
+        return 1
+
+    store = Storage(db_path)
+    summaries = store.duration_summary(min_runs=args.min_runs)
+    store.close()
+
+    if not summaries:
+        print("No duration data recorded yet.")
+        return 1
+
+    summaries.sort(key=lambda s: -s.avg_duration)
+    top = summaries[: args.top]
+
+    name_width = min(max((len(s.nodeid) for s in top), default=10), 70)
+    print(f"{'Test':<{name_width}}  {'Avg':>8}  {'Max':>8}  {'Runs':>6}  {'Total':>10}")
+    for s in top:
+        name = s.nodeid if len(s.nodeid) <= name_width else s.nodeid[: name_width - 1] + "\u2026"
+        print(f"{name:<{name_width}}  {s.avg_duration:>7.2f}s  {s.max_duration:>7.2f}s  {s.run_count:>6}  {s.total_duration:>9.1f}s")
+
+    print(f"\n(showing top {len(top)} of {len(summaries)} test(s) with >= {args.min_runs} run(s), by average duration)")
+    return 0
 
 
 def cmd_prune(args: argparse.Namespace) -> int:
@@ -555,6 +653,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             except LLMError as exc:
                 print(f"  connectivity: FAILED ({exc})")
 
+    warnings = config.validate()
+    if warnings:
+        print("\nconfig warnings:")
+        for w in warnings:
+            print(f"  - {w}")
+    else:
+        print("\nconfig: OK, no issues found")
+
     print("\nAll checks complete.")
     return 0
 
@@ -568,9 +674,15 @@ def cmd_quarantine(args: argparse.Namespace) -> int:
         if not entries:
             print("Quarantine list is empty.")
             return 0
+        stale_days_threshold = getattr(args, "stale_days", 30)
         for nodeid, e in sorted(entries.items()):
             tag = _color("[auto]", _DIM) if e.auto else _color("[manual]", _GREEN)
-            print(f"{tag} {nodeid}  {('# ' + e.comment) if e.comment else ''}")
+            stale_marker = ""
+            if e.auto:
+                days = days_since_auto_added(e)
+                if days is not None and days >= stale_days_threshold:
+                    stale_marker = _color(f"  (stale, {days}d - consider investigating)", _RED)
+            print(f"{tag} {nodeid}  {('# ' + e.comment) if e.comment else ''}{stale_marker}")
         return 0
 
     if args.qcmd == "add":
@@ -619,7 +731,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_init = sub.add_parser("init", help="Create a flakeradar.toml config file in the current directory.")
-    p_init.add_argument("--force", action="store_true", help="Overwrite an existing config file.")
+    p_init.add_argument("--force", action="store_true", help="Overwrite an existing config file (and workflow file, with --with-ci).")
+    p_init.add_argument("--with-ci", action="store_true", help="Also scaffold a starter .github/workflows/flakeradar.yml.")
     p_init.set_defaults(func=cmd_init)
 
     p_report = sub.add_parser("report", help="Generate the flakiness report from recorded history.")
@@ -657,7 +770,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_quarantine = sub.add_parser("quarantine", help="Manage the quarantine list of known-flaky tests.")
     q_sub = p_quarantine.add_subparsers(dest="qcmd", required=True)
-    q_sub.add_parser("list", help="List quarantined tests.").set_defaults(func=cmd_quarantine)
+    q_list = q_sub.add_parser("list", help="List quarantined tests.")
+    q_list.add_argument("--stale-days", type=int, default=30, help="Flag auto-quarantined tests older than N days (default: 30).")
+    q_list.set_defaults(func=cmd_quarantine)
     q_sync = q_sub.add_parser("sync", help="Recompute the quarantine list from recorded history.")
     q_sync.add_argument("--dry-run", action="store_true", help="Show what would change without writing the file.")
     q_sync.set_defaults(func=cmd_quarantine)
@@ -677,6 +792,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_prune = sub.add_parser("prune", help="Delete old run history, keeping only the N most recent runs.")
     p_prune.add_argument("--keep", type=int, required=True, help="Number of most recent runs to keep.")
     p_prune.set_defaults(func=cmd_prune)
+
+    p_slow = sub.add_parser("slow", help="Show the slowest tests by average recorded duration.")
+    p_slow.add_argument("--top", type=int, default=20, help="Number of tests to show (default: 20).")
+    p_slow.add_argument("--min-runs", type=int, default=1, help="Only include tests with at least N recorded runs (default: 1).")
+    p_slow.set_defaults(func=cmd_slow)
 
     p_junit = sub.add_parser(
         "import-junit",

@@ -69,3 +69,29 @@ def test_comment_lines_and_blank_lines_ignored(tmp_path: Path):
     path.write_text("# a comment\n\nt1\nt2  # with a note\n")
     entries = read_quarantine(path)
     assert set(entries.keys()) == {"t1", "t2"}
+
+
+def test_days_since_auto_added_parses_date(tmp_path: Path):
+    from datetime import datetime, timedelta, timezone
+
+    from flakeradar.quarantine import days_since_auto_added
+
+    old_date = (datetime.now(timezone.utc) - timedelta(days=45)).strftime("%Y-%m-%d")
+    entry = QuarantineEntry(nodeid="t1", comment=f"score=0.50, auto-added {old_date}", auto=True)
+    days = days_since_auto_added(entry)
+    assert days is not None
+    assert 44 <= days <= 46
+
+
+def test_days_since_auto_added_none_for_manual_entry():
+    from flakeradar.quarantine import days_since_auto_added
+
+    entry = QuarantineEntry(nodeid="t1", comment="manually pinned, see #42", auto=False)
+    assert days_since_auto_added(entry) is None
+
+
+def test_days_since_auto_added_none_when_unparseable():
+    from flakeradar.quarantine import days_since_auto_added
+
+    entry = QuarantineEntry(nodeid="t1", comment="auto-added at some point", auto=True)
+    assert days_since_auto_added(entry) is None

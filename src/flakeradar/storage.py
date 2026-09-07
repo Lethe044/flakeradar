@@ -84,6 +84,15 @@ class RunSummary:
     failed: int  # includes "error" outcomes
 
 
+@dataclass
+class DurationSummary:
+    nodeid: str
+    run_count: int
+    avg_duration: float
+    max_duration: float
+    total_duration: float
+
+
 class Storage:
     """Thin wrapper around a SQLite database file."""
 
@@ -260,6 +269,29 @@ class Storage:
         if limit:
             summaries = summaries[-limit:]
         return summaries
+
+    def duration_summary(self, min_runs: int = 1) -> List[DurationSummary]:
+        """Average/max/total duration per test, across all recorded runs.
+
+        `duration` is collected on every result but otherwise unused
+        elsewhere in storage - this is what powers `flakeradar slow`.
+        """
+        query = (
+            "SELECT nodeid, COUNT(*) AS run_count, AVG(duration) AS avg_duration, "
+            "MAX(duration) AS max_duration, SUM(duration) AS total_duration "
+            "FROM results GROUP BY nodeid HAVING COUNT(*) >= ?"
+        )
+        rows = self._conn.execute(query, (min_runs,)).fetchall()
+        return [
+            DurationSummary(
+                nodeid=row["nodeid"],
+                run_count=row["run_count"],
+                avg_duration=row["avg_duration"] or 0.0,
+                max_duration=row["max_duration"] or 0.0,
+                total_duration=row["total_duration"] or 0.0,
+            )
+            for row in rows
+        ]
 
     def iter_all_history(self) -> Iterator[tuple]:
         """Yield (nodeid, [HistoryEntry, ...]) for every known test."""

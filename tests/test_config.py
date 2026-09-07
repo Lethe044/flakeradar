@@ -63,3 +63,33 @@ def test_default_llm_model_for_known_provider(tmp_path: Path):
 def test_explicit_llm_model_overrides_default(tmp_path: Path):
     config = load_config(project_root=tmp_path, llm_provider="groq", llm_model="custom-model")
     assert config.default_llm_model() == "custom-model"
+
+
+def test_validate_no_warnings_for_defaults(tmp_path: Path):
+    config = load_config(project_root=tmp_path)
+    assert config.validate() == []
+
+
+def test_validate_flags_out_of_range_thresholds(tmp_path: Path):
+    config = load_config(project_root=tmp_path, flakiness_threshold=5.0, quarantine_threshold=-1.0)
+    warnings = config.validate()
+    assert any("flakiness_threshold" in w for w in warnings)
+    assert any("quarantine_threshold" in w and "outside" in w for w in warnings)
+
+
+def test_validate_flags_quarantine_below_flakiness_threshold(tmp_path: Path):
+    config = load_config(project_root=tmp_path, flakiness_threshold=0.5, quarantine_threshold=0.2)
+    warnings = config.validate()
+    assert any("lower than flakiness_threshold" in w for w in warnings)
+
+
+def test_validate_flags_invalid_min_runs(tmp_path: Path):
+    config = load_config(project_root=tmp_path, min_runs=0)
+    warnings = config.validate()
+    assert any("min_runs" in w for w in warnings)
+
+
+def test_validate_flags_unknown_provider(tmp_path: Path):
+    config = load_config(project_root=tmp_path, llm_provider="not-a-real-provider")
+    warnings = config.validate()
+    assert any("not-a-real-provider" in w for w in warnings)

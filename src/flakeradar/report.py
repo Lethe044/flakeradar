@@ -15,7 +15,7 @@ from typing import List, Optional
 
 from .clustering import cluster_failures
 from .scoring import FlakinessResult
-from .storage import HistoryEntry, RunSummary
+from .storage import DurationSummary, HistoryEntry, RunSummary
 
 _OUTCOME_COLOR = {
     1: "#22c55e",  # pass
@@ -113,6 +113,13 @@ _TEMPLATE = """<!DOCTYPE html>
     padding: 14px 18px; margin-bottom: 24px;
   }}
   .trend .l {{ font-size: 12px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px; }}
+  .slow-table {{
+    width: 100%; border-collapse: collapse; background: #131a22; border: 1px solid #1f2937;
+    border-radius: 10px; overflow: hidden; margin-bottom: 24px;
+  }}
+  .slow-table th, .slow-table td {{ text-align: left; padding: 8px 12px; border-bottom: 1px solid #1f2937; font-size: 12.5px; }}
+  .slow-table th {{ color: #9ca3af; font-weight: 600; }}
+  .slow-table .dur {{ font-variant-numeric: tabular-nums; color: #f59e0b; }}
 </style>
 </head>
 <body>
@@ -127,6 +134,7 @@ _TEMPLATE = """<!DOCTYPE html>
   </div>
 
 {trend_section}
+{slow_section}
   <table id="results">
     <thead>
       <tr>
@@ -181,6 +189,29 @@ def _row_html(nodeid: str, result: FlakinessResult, history: List[HistoryEntry],
       </tr>"""
 
 
+def _slow_table_html(summaries: List[DurationSummary], top: int = 10) -> str:
+    ordered = sorted(summaries, key=lambda s: -s.avg_duration)[:top]
+    if not ordered:
+        return ""
+    rows = "\n".join(
+        f"      <tr><td class=\"nodeid\">{html.escape(s.nodeid)}</td>"
+        f"<td class=\"dur\">{s.avg_duration:.2f}s</td>"
+        f"<td class=\"dur\">{s.max_duration:.2f}s</td>"
+        f"<td>{s.run_count}</td></tr>"
+        for s in ordered
+    )
+    return (
+        '  <div class="trend">\n'
+        f'    <div class="l">Slowest tests (top {len(ordered)}, by average duration)</div>\n'
+        '    <table class="slow-table"><thead><tr>'
+        "<th>Test</th><th>Avg</th><th>Max</th><th>Runs</th>"
+        "</tr></thead><tbody>\n"
+        f"{rows}\n"
+        "    </tbody></table>\n"
+        "  </div>\n"
+    )
+
+
 def generate_html_report(
     results: List[FlakinessResult],
     histories: dict,
@@ -188,6 +219,7 @@ def generate_html_report(
     threshold: float,
     window: int = 40,
     run_summaries: Optional[List[RunSummary]] = None,
+    duration_summaries: Optional[List[DurationSummary]] = None,
 ) -> str:
     ordered = sorted(results, key=lambda r: (-r.score, r.nodeid))
     rows = "\n".join(_row_html(r.nodeid, r, histories.get(r.nodeid, []), window) for r in ordered)
@@ -206,6 +238,8 @@ def generate_html_report(
             "  </div>\n"
         )
 
+    slow_section = _slow_table_html(duration_summaries) if duration_summaries else ""
+
     return _TEMPLATE.format(
         generated_at=time.strftime("%Y-%m-%d %H:%M:%S"),
         run_count=run_count,
@@ -214,6 +248,7 @@ def generate_html_report(
         broken_count=broken,
         stable_count=stable,
         trend_section=trend_section,
+        slow_section=slow_section,
         rows=rows or "      <tr><td colspan=\"6\">No data yet - run pytest with --flakeradar first.</td></tr>",
         threshold=threshold,
         window=window,
@@ -225,26 +260,38 @@ def write_report(path: Path, html_content: str) -> None:
     path.write_text(html_content, encoding="utf-8")
 
 
-def generate_json_report(results: List[FlakinessResult], run_count: int, threshold: float) -> str:
+def generate_json_report(
+    results: List[FlakinessResult],
+    run_count: int,
+    threshold: float,
+    duration_summaries: Optional[List[DurationSummary]] = None,
+) -> str:
     """Machine-readable summary, for custom dashboards or other tooling."""
+    duration_by_nodeid = {d.nodeid: d for d in (duration_summaries or [])}
+
+    def _test_entry(r: FlakinessResult) -> dict:
+        entry = {
+            "nodeid": r.nodeid,
+            "classification": r.classification,
+            "score": r.score,
+            "total_runs": r.total_runs,
+            "pass_count": r.pass_count,
+            "fail_count": r.fail_count,
+            "other_count": r.other_count,
+            "fail_rate": r.fail_rate,
+            "transition_rate": r.transition_rate,
+            "last_outcome": r.last_outcome,
+        }
+        duration = duration_by_nodeid.get(r.nodeid)
+        if duration is not None:
+            entry["avg_duration_seconds"] = round(duration.avg_duration, 4)
+            entry["max_duration_seconds"] = round(duration.max_duration, 4)
+        return entry
+
     payload = {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "run_count": run_count,
         "flakiness_threshold": threshold,
-        "tests": [
-            {
-                "nodeid": r.nodeid,
-                "classification": r.classification,
-                "score": r.score,
-                "total_runs": r.total_runs,
-                "pass_count": r.pass_count,
-                "fail_count": r.fail_count,
-                "other_count": r.other_count,
-                "fail_rate": r.fail_rate,
-                "transition_rate": r.transition_rate,
-                "last_outcome": r.last_outcome,
-            }
-            for r in sorted(results, key=lambda r: (-r.score, r.nodeid))
-        ],
+        "tests": [_test_entry(r) for r in sorted(results, key=lambda r: (-r.score, r.nodeid))],
     }
     return json.dumps(payload, indent=2)

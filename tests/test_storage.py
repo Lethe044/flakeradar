@@ -118,3 +118,33 @@ def test_run_summaries_limit(store: Storage):
 def test_wal_journal_mode_enabled(store: Storage):
     mode = store._conn.execute("PRAGMA journal_mode").fetchone()[0]
     assert mode.lower() == "wal"
+
+
+def test_duration_summary_computes_avg_max_total(store: Storage):
+    for i in range(4):
+        run_id = f"run{i}"
+        store.start_run(run_id, started_at=float(i))
+        store.record_results(
+            run_id,
+            [
+                TestResult(nodeid="slow", outcome="passed", duration=2.0 + i * 0.5),
+                TestResult(nodeid="fast", outcome="passed", duration=0.05),
+            ],
+        )
+    summaries = {s.nodeid: s for s in store.duration_summary()}
+    assert summaries["slow"].run_count == 4
+    assert summaries["slow"].avg_duration == pytest.approx(2.75)
+    assert summaries["slow"].max_duration == pytest.approx(3.5)
+    assert summaries["slow"].total_duration == pytest.approx(11.0)
+    assert summaries["fast"].avg_duration == pytest.approx(0.05)
+
+
+def test_duration_summary_respects_min_runs(store: Storage):
+    store.start_run("run0")
+    store.record_results("run0", [TestResult(nodeid="t", outcome="passed", duration=1.0)])
+    assert store.duration_summary(min_runs=1) != []
+    assert store.duration_summary(min_runs=2) == []
+
+
+def test_duration_summary_empty_db(store: Storage):
+    assert store.duration_summary() == []

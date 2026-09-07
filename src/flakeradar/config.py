@@ -14,7 +14,7 @@ import os
 import sys
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -82,6 +82,41 @@ class Config:
             "anthropic": "claude-3-5-haiku-latest",
         }
         return defaults.get(self.llm_provider, "")
+
+    def validate(self) -> List[str]:
+        """Return a list of human-readable warnings about implausible values.
+
+        Never raises - callers decide whether/how to surface these (e.g.
+        `flakeradar doctor` prints them). Nothing here blocks normal use;
+        it's meant to catch likely typos, not enforce hard constraints.
+        """
+        warnings: List[str] = []
+
+        if not (0.0 <= self.flakiness_threshold <= 1.0):
+            warnings.append(
+                f"flakiness_threshold={self.flakiness_threshold} is outside the expected 0.0-1.0 range"
+            )
+        if not (0.0 <= self.quarantine_threshold <= 1.0):
+            warnings.append(
+                f"quarantine_threshold={self.quarantine_threshold} is outside the expected 0.0-1.0 range"
+            )
+        if self.quarantine_threshold < self.flakiness_threshold:
+            warnings.append(
+                f"quarantine_threshold ({self.quarantine_threshold}) is lower than flakiness_threshold "
+                f"({self.flakiness_threshold}) - tests could be auto-quarantined before they're even "
+                "classified as flaky"
+            )
+        if self.min_runs < 1:
+            warnings.append(f"min_runs={self.min_runs} should be at least 1")
+
+        valid_providers = {"none", "groq", "gemini", "ollama", "openai", "anthropic"}
+        if self.llm_provider not in valid_providers:
+            warnings.append(
+                f"llm_provider='{self.llm_provider}' is not recognized "
+                f"(expected one of {', '.join(sorted(valid_providers))})"
+            )
+
+        return warnings
 
 
 def _read_toml(path: Path) -> Dict[str, Any]:

@@ -78,3 +78,43 @@ def test_json_report_contains_expected_fields():
     assert payload["run_count"] == 10
     assert payload["tests"][0]["nodeid"] == "t1"
     assert payload["tests"][0]["classification"] == "flaky"
+
+
+def test_html_report_includes_slow_section_when_durations_given():
+    from flakeradar.storage import DurationSummary
+
+    outcomes = ["passed"] * 5
+    result = score_test("t1", outcomes, min_runs=5)
+    durations = [DurationSummary(nodeid="t1", run_count=5, avg_duration=3.25, max_duration=4.0, total_duration=16.25)]
+    html = generate_html_report(
+        [result], {"t1": _history(outcomes)}, run_count=5, threshold=0.15, duration_summaries=durations
+    )
+    assert "Slowest tests" in html
+    assert "3.25s" in html
+
+
+def test_html_report_omits_slow_section_without_durations():
+    outcomes = ["passed"] * 5
+    result = score_test("t1", outcomes, min_runs=5)
+    html = generate_html_report([result], {"t1": _history(outcomes)}, run_count=5, threshold=0.15)
+    assert "Slowest tests" not in html
+
+
+def test_json_report_includes_duration_fields_when_given():
+    from flakeradar.storage import DurationSummary
+    from flakeradar.report import generate_json_report
+    import json as _json
+
+    result = score_test("t1", ["passed"] * 5, min_runs=5)
+    durations = [DurationSummary(nodeid="t1", run_count=5, avg_duration=1.23456, max_duration=2.0, total_duration=6.1728)]
+    payload = _json.loads(generate_json_report([result], run_count=5, threshold=0.15, duration_summaries=durations))
+    assert payload["tests"][0]["avg_duration_seconds"] == 1.2346
+
+
+def test_json_report_omits_duration_fields_without_durations():
+    from flakeradar.report import generate_json_report
+    import json as _json
+
+    result = score_test("t1", ["passed"] * 5, min_runs=5)
+    payload = _json.loads(generate_json_report([result], run_count=5, threshold=0.15))
+    assert "avg_duration_seconds" not in payload["tests"][0]

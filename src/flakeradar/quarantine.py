@@ -12,12 +12,16 @@ Format:
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Set
+from typing import Dict, Iterable, List, Optional, Set
 
 from .scoring import FlakinessResult
+
+_AUTO_DATE_RE = re.compile(r"auto-added (\d{4}-\d{2}-\d{2})")
 
 
 @dataclass
@@ -117,3 +121,20 @@ def sync_quarantine(
 
 def is_quarantined(path: Path, nodeid: str) -> bool:
     return nodeid in read_quarantine(path)
+
+
+def days_since_auto_added(entry: QuarantineEntry) -> Optional[int]:
+    """Days since an auto-added entry was quarantined, or None if it isn't
+    auto-added or its comment doesn't contain a parseable date (e.g. a
+    manually pinned entry, or one written by a future format version).
+    """
+    if not entry.auto:
+        return None
+    match = _AUTO_DATE_RE.search(entry.comment)
+    if not match:
+        return None
+    try:
+        added_date = datetime.strptime(match.group(1), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    return (datetime.now(timezone.utc) - added_date).days

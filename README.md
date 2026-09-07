@@ -58,6 +58,8 @@ dependencies beyond `requests` for optional AI calls.
 ```bash
 # 1. Scaffold a config file (optional but recommended)
 flakeradar init
+# ...or also scaffold a starter GitHub Actions workflow:
+flakeradar init --with-ci
 
 # 2. Run your test suite with tracking enabled
 pytest --flakeradar
@@ -177,6 +179,13 @@ while someone investigates. flakeradar can auto-manage a quarantine list:
 ```bash
 flakeradar quarantine sync     # add/remove tests based on current scores
 flakeradar quarantine list     # see what's currently quarantined and why
+```
+
+Auto-quarantined tests that have sat unaddressed for a while are easy to
+lose track of. List flags anything older than 30 days by default:
+
+```bash
+flakeradar quarantine list --stale-days 14
 ```
 
 Then, in CI, skip quarantined tests instead of letting them fail the build:
@@ -388,6 +397,7 @@ flakeradar import-junit <path> [--run-id ID] [--git-sha SHA] [--git-branch BRANC
 flakeradar diff --baseline BRANCH [--head BRANCH] [--fail-on-new]
                                           Compare flakiness between two branches
 flakeradar doctor [--live]                Check your setup (git, pytest, history db, LLM config)
+flakeradar slow [--top N] [--min-runs N] Show the slowest tests by average duration
 ```
 
 Run `flakeradar <command> --help` for the full set of flags on any
@@ -400,10 +410,24 @@ flakeradar doctor
 ```
 
 Checks that git is available, whether pytest is installed, the state and
-size of your history database, whether a quarantine file exists, and
-whether your configured LLM provider looks correctly set up (add `--live`
-to make one real API call and confirm connectivity, rather than just
-checking that a key is present).
+size of your history database, whether a quarantine file exists, whether
+your configured LLM provider looks correctly set up (add `--live` to make
+one real API call and confirm connectivity, rather than just checking
+that a key is present), and flags implausible configuration values (a
+threshold outside 0.0-1.0, an unrecognized provider name, and so on).
+
+## Finding your slowest tests
+
+Every recorded result already includes its duration, so beyond flakiness
+you can also see what's actually slow:
+
+```bash
+flakeradar slow --top 20
+```
+
+This also shows up automatically in the HTML report (a "Slowest tests"
+section) and the JSON report (`avg_duration_seconds` / `max_duration_seconds`
+per test), no extra flag needed.
 
 ## FAQ
 
