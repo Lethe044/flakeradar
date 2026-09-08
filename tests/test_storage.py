@@ -148,3 +148,42 @@ def test_duration_summary_respects_min_runs(store: Storage):
 
 def test_duration_summary_empty_db(store: Storage):
     assert store.duration_summary() == []
+
+
+def test_analysis_cache_miss_returns_none(store: Storage):
+    assert store.get_cached_analysis("nonexistent-key") is None
+
+
+def test_analysis_cache_set_and_get(store: Storage):
+    store.set_cached_analysis("key1", "t1", "timing_or_sleep", "medium", "looks timing related", "add retry", "raw")
+    cached = store.get_cached_analysis("key1")
+    assert cached["category"] == "timing_or_sleep"
+    assert cached["confidence"] == "medium"
+    assert cached["explanation"] == "looks timing related"
+    assert cached["suggested_fix"] == "add retry"
+
+
+def test_analysis_cache_overwrites_on_same_key(store: Storage):
+    store.set_cached_analysis("key1", "t1", "timing_or_sleep", "medium", "first", "fix1", "raw1")
+    store.set_cached_analysis("key1", "t1", "race_condition", "high", "second", "fix2", "raw2")
+    cached = store.get_cached_analysis("key1")
+    assert cached["category"] == "race_condition"
+    assert cached["explanation"] == "second"
+
+
+def test_analysis_cache_clear_by_nodeid(store: Storage):
+    store.set_cached_analysis("key1", "t1", "timing_or_sleep", "medium", "e1", "f1", "r1")
+    store.set_cached_analysis("key2", "t2", "race_condition", "high", "e2", "f2", "r2")
+    removed = store.clear_analysis_cache(nodeid="t1")
+    assert removed == 1
+    assert store.get_cached_analysis("key1") is None
+    assert store.get_cached_analysis("key2") is not None
+
+
+def test_analysis_cache_clear_all(store: Storage):
+    store.set_cached_analysis("key1", "t1", "timing_or_sleep", "medium", "e1", "f1", "r1")
+    store.set_cached_analysis("key2", "t2", "race_condition", "high", "e2", "f2", "r2")
+    removed = store.clear_analysis_cache()
+    assert removed == 2
+    assert store.get_cached_analysis("key1") is None
+    assert store.get_cached_analysis("key2") is None

@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List
 
 from .config import Config
+from .ignore import filter_ignored
 from .scoring import FlakinessResult, score_test
 from .storage import Storage
 
@@ -35,7 +36,7 @@ class DiffResult:
 
 def _classify_branch(store: Storage, branch: str, config: Config) -> Dict[str, FlakinessResult]:
     out: Dict[str, FlakinessResult] = {}
-    for nodeid in store.all_nodeids(branch=branch):
+    for nodeid in filter_ignored(store.all_nodeids(branch=branch), config.ignore):
         history = store.history_for(nodeid, branch=branch)
         outcomes = [h.outcome for h in history]
         out[nodeid] = score_test(nodeid, outcomes, config.min_runs, config.flakiness_threshold)

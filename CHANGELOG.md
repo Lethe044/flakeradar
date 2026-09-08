@@ -5,6 +5,31 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] - 2026-09-01
+
+### Added
+- AI analysis caching: `flakeradar analyze` (and `--all`) now cache
+  results keyed to the actual failure pattern (fingerprinted failure
+  clusters), not a time-based TTL - a cached analysis stays valid until a
+  test's failures actually change, avoiding repeat API calls for
+  unchanged information. Add `--no-cache` to force a fresh call. This
+  directly protects free-tier rate limits, which matters most for
+  projects relying on them.
+- `flakeradar stress --parallel N`: runs stress iterations concurrently
+  instead of one at a time, significantly reducing wall time for larger
+  `-n` values.
+- Ignore list: an `ignore = [...]` list of glob patterns in
+  `flakeradar.toml` (or `FLAKERADAR_IGNORE`, comma-separated) excludes
+  matching tests from tracking and every report/quarantine/diff
+  computation entirely - for tests that are intentionally
+  non-deterministic by design (property-based/fuzz tests) and shouldn't
+  ever be flagged as "flaky". Respected by the pytest plugin (never
+  recorded in the first place) and by existing history (filtered out of
+  aggregate views even if previously recorded). `flakeradar doctor` shows
+  configured patterns.
+- `flakeradar completion {bash,zsh,fish}`: prints a shell completion
+  script for the CLI's subcommands.
+
 ## [1.4.0] - 2026-09-01
 
 ### Added

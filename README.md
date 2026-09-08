@@ -86,7 +86,13 @@ flakeradar stress tests/test_checkout.py -k test_apply_discount -n 30 --analyze
 
 This runs the test 30 times in a row, records the outcomes, prints a
 flakiness score immediately, and (with `--analyze` and a provider
-configured) asks an LLM for a root cause hypothesis.
+configured) asks an LLM for a root cause hypothesis. Add `--parallel N`
+to run iterations concurrently instead of one at a time - useful when
+`-n` is large and each run takes a while:
+
+```bash
+flakeradar stress tests/test_checkout.py -k test_apply_discount -n 50 --parallel 8
+```
 
 Try it on the bundled example file to see the whole flow without touching
 your own test suite:
@@ -170,6 +176,11 @@ instead of calling `analyze` repeatedly:
 ```bash
 flakeradar analyze --all --out flaky-analysis.md
 ```
+
+Results are cached against the actual failure pattern (not a timer), so
+re-running `analyze` on a test whose failures haven't changed doesn't
+burn another API call - handy on free-tier rate limits. Pass `--no-cache`
+to force a fresh call regardless.
 
 ## Quarantining flaky tests
 
@@ -398,6 +409,7 @@ flakeradar diff --baseline BRANCH [--head BRANCH] [--fail-on-new]
                                           Compare flakiness between two branches
 flakeradar doctor [--live]                Check your setup (git, pytest, history db, LLM config)
 flakeradar slow [--top N] [--min-runs N] Show the slowest tests by average duration
+flakeradar completion {bash,zsh,fish}    Print a shell completion script
 ```
 
 Run `flakeradar <command> --help` for the full set of flags on any
@@ -428,6 +440,44 @@ flakeradar slow --top 20
 This also shows up automatically in the HTML report (a "Slowest tests"
 section) and the JSON report (`avg_duration_seconds` / `max_duration_seconds`
 per test), no extra flag needed.
+
+## Excluding tests entirely
+
+Some tests are non-deterministic on purpose - property-based/fuzz tests
+being the classic example - and shouldn't ever be flagged as "flaky"
+since their pass/fail alternation is expected, not a bug. Exclude them
+from tracking and every report/quarantine/diff computation with glob
+patterns matched against the full nodeid:
+
+```toml
+# flakeradar.toml
+ignore = ["tests/fuzz/*", "tests/property/*"]
+```
+
+Or via `FLAKERADAR_IGNORE` (comma-separated) for CI overrides. This is
+respected by the pytest plugin (matching tests are never recorded in the
+first place) and by every view - flakiness reports, `quarantine sync`,
+`diff`, `badge`, and the slow-tests views (`flakeradar slow` and the
+report's "Slowest tests" section) alike. Even history recorded before a
+test was added to the ignore list disappears from all of these
+immediately, no data migration needed. `flakeradar history <nodeid>`
+still works for an explicitly named ignored test, since that's a direct
+request rather than an aggregate view.
+
+## Shell completion
+
+```bash
+# bash
+echo 'eval "$(flakeradar completion bash)"' >> ~/.bashrc
+
+# zsh
+echo 'eval "$(flakeradar completion zsh)"' >> ~/.zshrc
+
+# fish
+flakeradar completion fish > ~/.config/fish/completions/flakeradar.fish
+```
+
+Completes top-level subcommands (`report`, `diff`, `doctor`, and so on).
 
 ## FAQ
 

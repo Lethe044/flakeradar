@@ -55,6 +55,10 @@ class Config:
     # Notifications
     webhook_url: Optional[str] = None
 
+    # Tests to exclude entirely from tracking and reporting (glob patterns
+    # matched against the full pytest nodeid, e.g. "tests/fuzz/*").
+    ignore: List[str] = field(default_factory=list)
+
     def resolve_db_path(self) -> Path:
         if self.db_path:
             return Path(self.db_path)
@@ -161,6 +165,12 @@ def _apply_env(data: Dict[str, Any]) -> Dict[str, Any]:
             if os.environ.get(alias):
                 data["llm_api_key"] = os.environ[alias]
                 break
+
+    # Comma-separated list, handled separately since it isn't a scalar 1:1
+    # mapping like the fields above.
+    if os.environ.get("FLAKERADAR_IGNORE"):
+        data["ignore"] = [p.strip() for p in os.environ["FLAKERADAR_IGNORE"].split(",") if p.strip()]
+
     return data
 
 

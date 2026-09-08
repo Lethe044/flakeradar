@@ -42,6 +42,12 @@ llm_provider = "none"
 # --- Report ------------------------------------------------------------
 report_out = "flakeradar-report.html"
 
+# Tests to exclude entirely from tracking and reporting - glob patterns
+# matched against the full pytest nodeid. Useful for tests that are
+# intentionally non-deterministic by design (property-based/fuzz tests)
+# and shouldn't ever be flagged as flaky.
+# ignore = ["tests/fuzz/*", "tests/property/*"]
+
 # --- Notifications (optional) -------------------------------------------
 # Slack-compatible incoming webhook URL (also works with Discord and
 # Mattermost). When set, `flakeradar report` posts a summary automatically.

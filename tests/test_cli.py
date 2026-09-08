@@ -319,6 +319,78 @@ def test_slow_command_without_history_returns_error(tmp_path, monkeypatch):
     assert rc == 1
 
 
+def test_ignore_list_excludes_test_from_report(tmp_path, monkeypatch):
+    from flakeradar.storage import Storage
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "flakeradar.toml").write_text('ignore = ["tests/fuzz/*"]\n')
+    db_path = tmp_path / ".flakeradar" / "history.db"
+    store = Storage(db_path)
+    for i in range(6):
+        store.start_run(f"run{i}", started_at=float(i))
+        store.record_results(
+            f"run{i}",
+            [
+                TestResult(nodeid="tests/fuzz/test_c.py::test_fuzzy", outcome="passed" if i % 2 else "failed"),
+                TestResult(nodeid="tests/test_b.py::test_stable", outcome="passed"),
+            ],
+        )
+    store.close()
+
+    rc = _run(["report"])
+    assert rc == 0
+    html = (tmp_path / "flakeradar-report.html").read_text()
+    assert "test_fuzzy" not in html
+    assert "test_stable" in html
+
+
+def test_ignore_list_excludes_test_from_slow_command(tmp_path, monkeypatch, capsys):
+    from flakeradar.storage import Storage
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "flakeradar.toml").write_text('ignore = ["tests/fuzz/*"]\n')
+    db_path = tmp_path / ".flakeradar" / "history.db"
+    store = Storage(db_path)
+    store.start_run("run0")
+    store.record_results(
+        "run0",
+        [
+            TestResult(nodeid="tests/fuzz/test_c.py::test_fuzzy", outcome="passed", duration=5.0),
+            TestResult(nodeid="tests/test_b.py::test_stable", outcome="passed", duration=0.1),
+        ],
+    )
+    store.close()
+
+    rc = _run(["slow"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "test_fuzzy" not in out
+    assert "test_stable" in out
+
+
+def test_ignore_list_excludes_test_from_diff(tmp_path, monkeypatch, capsys):
+    from flakeradar.storage import Storage
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "flakeradar.toml").write_text('ignore = ["tests/fuzz/*"]\n')
+    db_path = tmp_path / ".flakeradar" / "history.db"
+    store = Storage(db_path)
+    for i in range(6):
+        store.start_run(f"m{i}", started_at=float(i), git_branch="main")
+        store.record_results(f"m{i}", [TestResult(nodeid="tests/fuzz/test_c.py::test_fuzzy", outcome="passed")])
+    for i in range(6):
+        store.start_run(f"h{i}", started_at=100 + float(i), git_branch="head")
+        outcome = "passed" if i % 2 == 0 else "failed"
+        store.record_results(f"h{i}", [TestResult(nodeid="tests/fuzz/test_c.py::test_fuzzy", outcome=outcome)])
+    store.close()
+
+    rc = _run(["diff", "--baseline", "main", "--head", "head"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    # the only test that changed is ignored, so nothing should be reported as new
+    assert "No new flakiness" in out
+
+
 def test_init_with_ci_scaffolds_workflow(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     rc = _run(["init", "--with-ci"])
@@ -395,3 +467,78 @@ def test_quarantine_list_flags_stale_entries(tmp_path, monkeypatch, capsys):
     assert rc2 == 0
     out2 = capsys.readouterr().out
     assert "stale" not in out2
+
+
+def test_completion_bash_command(capsys):
+    rc = _run(["completion", "bash"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "_flakeradar_completion" in out
+
+
+def test_completion_zsh_command(capsys):
+    rc = _run(["completion", "zsh"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "#compdef flakeradar" in out
+
+
+def test_doctor_shows_ignore_patterns(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "flakeradar.toml").write_text('ignore = ["tests/fuzz/*"]\n')
+    rc = _run(["doctor"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "ignore patterns: 1 configured" in out
+    assert "tests/fuzz/*" in out
+
+
+def test_doctor_shows_no_ignore_patterns_by_default(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    rc = _run(["doctor"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "ignore patterns: none configured" in out
+
+
+def test_stress_parallel_runs_all_iterations(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    call_log = []
+
+    def fake_run_once(pytest_args):
+        call_log.append(pytest_args)
+        # alternate pass/fail deterministically by call count
+        outcome = "passed" if len(call_log) % 2 == 0 else "failed"
+        return outcome, "output"
+
+    monkeypatch.setattr("flakeradar.cli._run_pytest_once", fake_run_once)
+
+    rc = _run(["stress", "some_test.py", "-k", "test_x", "-n", "6", "--parallel", "3"])
+    assert rc in (0, 1)  # depends on classification, both are valid exit paths
+    assert len(call_log) == 6
+
+    from flakeradar.storage import Storage
+
+    store = Storage(tmp_path / ".flakeradar" / "history.db")
+    history = store.history_for("test_x")
+    store.close()
+    assert len(history) == 6
+
+
+def test_stress_sequential_matches_parallel_count(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run_once(pytest_args):
+        return "passed", ""
+
+    monkeypatch.setattr("flakeradar.cli._run_pytest_once", fake_run_once)
+    rc = _run(["stress", "some_test.py", "-k", "test_y", "-n", "5"])
+    assert rc == 0  # all passed -> stable classification -> exit 0
+
+    from flakeradar.storage import Storage
+
+    store = Storage(tmp_path / ".flakeradar" / "history.db")
+    history = store.history_for("test_y")
+    store.close()
+    assert len(history) == 5

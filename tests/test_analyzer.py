@@ -81,3 +81,51 @@ def test_try_analyze_test_catches_llm_error():
     result, error = try_analyze_test(provider, "t", stats, clusters)
     assert result is None
     assert "simulated failure" in error
+
+
+def test_build_cache_key_stable_for_same_clusters():
+    from flakeradar.llm.analyzer import build_cache_key
+
+    clusters_a = cluster_failures(["E TimeoutError: connection timed out"] * 3)
+    clusters_b = cluster_failures(["E TimeoutError: connection timed out"] * 3)
+    assert build_cache_key("t1", clusters_a) == build_cache_key("t1", clusters_b)
+
+
+def test_build_cache_key_changes_with_different_failure_pattern():
+    from flakeradar.llm.analyzer import build_cache_key
+
+    clusters_a = cluster_failures(["E TimeoutError: x"] * 3)
+    clusters_b = cluster_failures(["E ValueError: y"] * 3)
+    assert build_cache_key("t1", clusters_a) != build_cache_key("t1", clusters_b)
+
+
+def test_build_cache_key_changes_with_different_nodeid():
+    from flakeradar.llm.analyzer import build_cache_key
+
+    clusters = cluster_failures(["E TimeoutError: x"] * 3)
+    assert build_cache_key("t1", clusters) != build_cache_key("t2", clusters)
+
+
+def test_analysis_from_cache_row_reconstructs_analysis():
+    from flakeradar.llm.analyzer import analysis_from_cache_row
+
+    row = {
+        "category": "race_condition",
+        "confidence": "high",
+        "explanation": "shared state",
+        "suggested_fix": "use a lock",
+        "raw_response": "raw text",
+    }
+    analysis = analysis_from_cache_row(row)
+    assert analysis.category == "race_condition"
+    assert analysis.category_label == "Race condition"
+    assert analysis.confidence == "high"
+    assert analysis.explanation == "shared state"
+
+
+def test_analysis_from_cache_row_handles_unknown_category():
+    from flakeradar.llm.analyzer import analysis_from_cache_row
+
+    row = {"category": "not_a_real_category", "confidence": "low", "explanation": "", "suggested_fix": "", "raw_response": ""}
+    analysis = analysis_from_cache_row(row)
+    assert analysis.category == "unknown"

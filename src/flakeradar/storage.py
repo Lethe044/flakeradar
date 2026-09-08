@@ -14,7 +14,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, List, Optional
+from typing import Dict, Iterator, List, Optional
 
 SCHEMA_VERSION = 1
 
@@ -47,6 +47,17 @@ CREATE TABLE IF NOT EXISTS results (
 
 CREATE INDEX IF NOT EXISTS idx_results_nodeid ON results (nodeid);
 CREATE INDEX IF NOT EXISTS idx_results_run_id ON results (run_id);
+
+CREATE TABLE IF NOT EXISTS analysis_cache (
+    cache_key TEXT PRIMARY KEY,
+    nodeid TEXT NOT NULL,
+    category TEXT,
+    confidence TEXT,
+    explanation TEXT,
+    suggested_fix TEXT,
+    raw_response TEXT,
+    cached_at REAL NOT NULL
+);
 """
 
 
@@ -292,6 +303,51 @@ class Storage:
             )
             for row in rows
         ]
+
+    # -- AI analysis cache ------------------------------------------------
+    # Keyed by a fingerprint of (nodeid, failure clusters) rather than time,
+    # so a cached analysis stays valid until the actual failure pattern
+    # changes - see llm/analyzer.py:build_cache_key. This avoids burning
+    # free-tier API quota re-analyzing a test that hasn't produced any new
+    # information since the last call.
+
+    def get_cached_analysis(self, cache_key: str) -> Optional[Dict[str, str]]:
+        row = self._conn.execute(
+            "SELECT category, confidence, explanation, suggested_fix, raw_response "
+            "FROM analysis_cache WHERE cache_key = ?",
+            (cache_key,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def set_cached_analysis(
+        self,
+        cache_key: str,
+        nodeid: str,
+        category: str,
+        confidence: str,
+        explanation: str,
+        suggested_fix: str,
+        raw_response: str,
+    ) -> None:
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO analysis_cache "
+                "(cache_key, nodeid, category, confidence, explanation, suggested_fix, raw_response, cached_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(cache_key) DO UPDATE SET "
+                "category=excluded.category, confidence=excluded.confidence, "
+                "explanation=excluded.explanation, suggested_fix=excluded.suggested_fix, "
+                "raw_response=excluded.raw_response, cached_at=excluded.cached_at",
+                (cache_key, nodeid, category, confidence, explanation, suggested_fix, raw_response, time.time()),
+            )
+
+    def clear_analysis_cache(self, nodeid: Optional[str] = None) -> int:
+        with self._conn:
+            if nodeid is not None:
+                cur = self._conn.execute("DELETE FROM analysis_cache WHERE nodeid = ?", (nodeid,))
+            else:
+                cur = self._conn.execute("DELETE FROM analysis_cache")
+            return cur.rowcount
 
     def iter_all_history(self) -> Iterator[tuple]:
         """Yield (nodeid, [HistoryEntry, ...]) for every known test."""

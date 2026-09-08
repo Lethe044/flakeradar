@@ -7,10 +7,11 @@ statistical output - flakeradar never requires an API key to be useful).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from ..clustering import FailureCluster
 from ..scoring import FlakinessResult
@@ -147,3 +148,31 @@ def try_analyze_test(
         return analyze_test(provider, nodeid, stats, clusters, source_snippet), None
     except LLMError as exc:
         return None, str(exc)
+
+
+def build_cache_key(nodeid: str, clusters: List[FailureCluster]) -> str:
+    """A stable key that changes only when the actual failure pattern does.
+
+    Rather than a time-based cache, this ties invalidation to content: as
+    long as a test keeps failing in the same ways (same cluster
+    fingerprints), a cached analysis stays valid. The moment a new failure
+    fingerprint shows up, the key changes and a fresh analysis runs.
+    """
+    fingerprint_blob = "|".join(sorted(c.fingerprint for c in clusters))
+    digest_input = f"{nodeid}::{fingerprint_blob}"
+    return hashlib.sha1(digest_input.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def analysis_from_cache_row(row: Dict[str, str]) -> RootCauseAnalysis:
+    """Reconstruct a RootCauseAnalysis from a Storage.get_cached_analysis row."""
+    category = row.get("category") or "unknown"
+    if category not in _CATEGORY_LABELS:
+        category = "unknown"
+    return RootCauseAnalysis(
+        category=category,
+        category_label=_CATEGORY_LABELS[category],
+        confidence=row.get("confidence") or "low",
+        explanation=row.get("explanation") or "",
+        suggested_fix=row.get("suggested_fix") or "",
+        raw_response=row.get("raw_response") or "",
+    )

@@ -93,3 +93,26 @@ def test_validate_flags_unknown_provider(tmp_path: Path):
     config = load_config(project_root=tmp_path, llm_provider="not-a-real-provider")
     warnings = config.validate()
     assert any("not-a-real-provider" in w for w in warnings)
+
+
+def test_ignore_defaults_to_empty_list(tmp_path: Path):
+    config = load_config(project_root=tmp_path)
+    assert config.ignore == []
+
+
+def test_ignore_from_toml_file(tmp_path: Path):
+    (tmp_path / "flakeradar.toml").write_text('ignore = ["tests/fuzz/*", "tests/load/*"]\n')
+    config = load_config(project_root=tmp_path)
+    assert config.ignore == ["tests/fuzz/*", "tests/load/*"]
+
+
+def test_ignore_from_env_var_comma_separated(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("FLAKERADAR_IGNORE", "tests/fuzz/*, tests/load/*")
+    config = load_config(project_root=tmp_path)
+    assert config.ignore == ["tests/fuzz/*", "tests/load/*"]
+
+
+def test_ignore_explicit_kwarg_overrides_toml(tmp_path: Path):
+    (tmp_path / "flakeradar.toml").write_text('ignore = ["tests/fuzz/*"]\n')
+    config = load_config(project_root=tmp_path, ignore=["tests/other/*"])
+    assert config.ignore == ["tests/other/*"]

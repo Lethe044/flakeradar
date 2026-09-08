@@ -18,6 +18,7 @@ import pytest
 
 from .config import load_config
 from .gitinfo import current_branch, current_sha
+from .ignore import matches_ignore
 from .quarantine import read_quarantine
 from .storage import Storage, TestResult
 from .summary import build_run_summary_markdown, write_github_step_summary
@@ -87,6 +88,9 @@ def pytest_runtest_makereport(item: "pytest.Item", call: "pytest.CallInfo") -> N
     if not config.getoption("--flakeradar"):
         return
     if not hasattr(config, "_flakeradar_results"):
+        return
+
+    if matches_ignore(item.nodeid, config._flakeradar_config.ignore):  # type: ignore[attr-defined]
         return
 
     # Only record the "call" phase as pass/fail; setup/teardown errors are

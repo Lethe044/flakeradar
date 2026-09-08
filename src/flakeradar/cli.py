@@ -10,19 +10,22 @@ import time
 import uuid
 import webbrowser
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional
 
 from . import __version__
 from .badge import badge_for_flaky_count
 from .clustering import cluster_failures
+from .completion import generate_completion
 from .config import Config, load_config
 from .diff import diff_branches
 from .github_comment import build_comment_markdown, detect_pr_context, post_or_update_comment
 from .gitinfo import current_branch, current_sha
+from .ignore import filter_ignored, matches_ignore
 from .junit_import import parse_junit_xml, run_id_for_import
 from .llm import LLMError, build_provider, provider_names
-from .llm.analyzer import try_analyze_test
+from .llm.analyzer import analysis_from_cache_row, build_cache_key, try_analyze_test
 from .notify import build_notification_text, send_webhook
 from .quarantine import QuarantineEntry, days_since_auto_added, read_quarantine, sync_quarantine, write_quarantine
 from .report import generate_html_report, generate_json_report, write_report
@@ -45,7 +48,7 @@ def _color(text: str, code: str) -> str:
 
 def _compute_all_scores(store: Storage, config: Config) -> List[FlakinessResult]:
     results = []
-    for nodeid in store.all_nodeids():
+    for nodeid in filter_ignored(store.all_nodeids(), config.ignore):
         history = store.history_for(nodeid)
         outcomes = [h.outcome for h in history]
         results.append(
@@ -177,6 +180,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     histories = {r.nodeid: store.history_for(r.nodeid) for r in results}
     run_summaries = store.run_summaries()
     duration_summaries = store.duration_summary()
+    duration_summaries = [d for d in duration_summaries if not matches_ignore(d.nodeid, config.ignore)]
     run_count = store.run_count()
     store.close()
 
@@ -261,6 +265,7 @@ def cmd_slow(args: argparse.Namespace) -> int:
 
     store = Storage(db_path)
     summaries = store.duration_summary(min_runs=args.min_runs)
+    summaries = [s for s in summaries if not matches_ignore(s.nodeid, config.ignore)]
     store.close()
 
     if not summaries:
@@ -381,16 +386,29 @@ def cmd_stress(args: argparse.Namespace) -> int:
     run_id = f"stress-{int(time.time())}-{uuid.uuid4().hex[:6]}"
     store.start_run(run_id=run_id, git_sha=current_sha(), git_branch=current_branch(), source="stress")
 
-    print(f"Running {pytest_args} {args.n} time(s)...")
-    outcomes = []
+    print(f"Running {pytest_args} {args.n} time(s)" + (f" ({args.parallel} in parallel)" if args.parallel > 1 else "") + "...")
+    outcomes: List[Optional[str]] = [None] * args.n
     last_failure_output = ""
-    for i in range(args.n):
-        outcome, output = _run_pytest_once(pytest_args)
-        outcomes.append(outcome)
-        if outcome != "passed":
-            last_failure_output = output
-        sys.stdout.write(_color("+", _GREEN) if outcome == "passed" else _color("x", _RED))
-        sys.stdout.flush()
+
+    if args.parallel <= 1:
+        for i in range(args.n):
+            outcome, output = _run_pytest_once(pytest_args)
+            outcomes[i] = outcome
+            if outcome != "passed":
+                last_failure_output = output
+            sys.stdout.write(_color("+", _GREEN) if outcome == "passed" else _color("x", _RED))
+            sys.stdout.flush()
+    else:
+        with ThreadPoolExecutor(max_workers=args.parallel) as executor:
+            future_to_index = {executor.submit(_run_pytest_once, pytest_args): i for i in range(args.n)}
+            for future in as_completed(future_to_index):
+                i = future_to_index[future]
+                outcome, output = future.result()
+                outcomes[i] = outcome
+                if outcome != "passed":
+                    last_failure_output = output
+                sys.stdout.write(_color("+", _GREEN) if outcome == "passed" else _color("x", _RED))
+                sys.stdout.flush()
     print()
 
     nodeid = args.k or args.path
@@ -421,6 +439,45 @@ def cmd_stress(args: argparse.Namespace) -> int:
     return 0 if stats.classification == "stable" else 1
 
 
+def _analyze_with_cache(
+    store: Storage,
+    config: Config,
+    nodeid: str,
+    stats: FlakinessResult,
+    clusters,
+    source_snippet: Optional[str] = None,
+    use_cache: bool = True,
+) -> "tuple[object, Optional[str], bool]":
+    """Returns (analysis, error, was_cached). Cache is keyed to the actual
+    failure pattern (see build_cache_key), so it stays valid across repeat
+    calls until the failures themselves change - avoiding repeat API calls
+    for the same information, which matters most on free-tier rate limits.
+    """
+    cache_key = build_cache_key(nodeid, clusters)
+    if use_cache:
+        cached = store.get_cached_analysis(cache_key)
+        if cached is not None:
+            return analysis_from_cache_row(cached), None, True
+
+    try:
+        provider = build_provider(config)
+    except LLMError as exc:
+        return None, str(exc), False
+
+    analysis, error = try_analyze_test(provider, nodeid, stats, clusters, source_snippet)
+    if analysis is not None and use_cache:
+        store.set_cached_analysis(
+            cache_key,
+            nodeid,
+            analysis.category,
+            analysis.confidence,
+            analysis.explanation,
+            analysis.suggested_fix,
+            analysis.raw_response,
+        )
+    return analysis, error, False
+
+
 def cmd_analyze(args: argparse.Namespace) -> int:
     config = load_config(llm_provider=args.llm_provider)
     db_path = config.resolve_db_path()
@@ -437,8 +494,8 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 
     store = Storage(db_path)
     history = store.history_for(args.nodeid)
-    store.close()
     if not history:
+        store.close()
         print(f"No history for '{args.nodeid}'.")
         return 1
 
@@ -457,15 +514,13 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         if src_path.is_file():
             source_snippet = src_path.read_text(encoding="utf-8", errors="replace")
 
-    try:
-        provider = build_provider(config)
-    except LLMError as exc:
-        print(f"\nCould not build LLM provider: {exc}")
-        return 1
+    analysis, error, was_cached = _analyze_with_cache(
+        store, config, args.nodeid, stats, clusters, source_snippet, use_cache=not args.no_cache
+    )
+    store.close()
 
-    analysis, error = try_analyze_test(provider, args.nodeid, stats, clusters, source_snippet)
     if analysis:
-        _print_analysis(analysis)
+        _print_analysis(analysis, was_cached)
         return 0
     print(f"\nAI analysis unavailable: {error}")
     print("(Statistical data above is still valid without AI analysis.)")
@@ -482,28 +537,35 @@ def _cmd_analyze_all(args: argparse.Namespace, config: Config, db_path: Path) ->
         store.close()
         return 0
 
-    try:
-        provider = build_provider(config)
-    except LLMError as exc:
-        print(f"Could not build LLM provider: {exc}")
+    # Fail fast with one clear message rather than N repeated ones if the
+    # provider is missing/misconfigured.
+    if (config.llm_provider or "none") == "none":
+        print("No LLM provider configured. Set --llm-provider or FLAKERADAR_LLM_PROVIDER.")
         store.close()
         return 1
-    if provider is None:
-        print("No LLM provider configured. Set --llm-provider or FLAKERADAR_LLM_PROVIDER.")
+    try:
+        build_provider(config)
+    except LLMError as exc:
+        print(f"Could not build LLM provider: {exc}")
         store.close()
         return 1
 
     print(f"Analyzing {len(targets)} test(s)...\n")
     sections = []
+    cached_count = 0
     for r in sorted(targets, key=lambda r: -r.score):
         history = store.history_for(r.nodeid)
         longreprs = [h.longrepr for h in history if h.longrepr]
         clusters = cluster_failures(longreprs)
 
         print(f"{r.nodeid}  (score={r.score:.2f}, {r.classification})")
-        analysis, error = try_analyze_test(provider, r.nodeid, r, clusters)
+        analysis, error, was_cached = _analyze_with_cache(
+            store, config, r.nodeid, r, clusters, use_cache=not args.no_cache
+        )
+        if was_cached:
+            cached_count += 1
         if analysis:
-            _print_analysis(analysis)
+            _print_analysis(analysis, was_cached)
             sections.append(
                 f"## {r.nodeid}\n\n"
                 f"- Classification: {r.classification} (score {r.score:.2f})\n"
@@ -523,14 +585,18 @@ def _cmd_analyze_all(args: argparse.Namespace, config: Config, db_path: Path) ->
 
     store.close()
 
+    if cached_count:
+        print(f"({cached_count}/{len(targets)} result(s) served from cache - use --no-cache to force a refresh)")
+
     if args.out:
         Path(args.out).write_text("# flakeradar AI analysis\n\n" + "\n".join(sections), encoding="utf-8")
         print(f"Written to {args.out}")
     return 0
 
 
-def _print_analysis(analysis) -> None:
-    print(f"\n{_color('AI root cause analysis', _BOLD)} (confidence: {analysis.confidence})")
+def _print_analysis(analysis, was_cached: bool = False) -> None:
+    cache_note = _color(" (cached)", _DIM) if was_cached else ""
+    print(f"\n{_color('AI root cause analysis', _BOLD)} (confidence: {analysis.confidence}){cache_note}")
     print(f"  Category:    {analysis.category_label}")
     print(f"  Explanation: {analysis.explanation}")
     print(f"  Suggested fix: {analysis.suggested_fix}")
@@ -638,6 +704,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     else:
         print(f"quarantine: none yet (would be created at {q_path})")
 
+    if config.ignore:
+        print(f"ignore patterns: {len(config.ignore)} configured ({', '.join(config.ignore[:5])}{', ...' if len(config.ignore) > 5 else ''})")
+    else:
+        print("ignore patterns: none configured")
+
     print(f"llm provider: {config.llm_provider}")
     if config.llm_provider != "none":
         print(f"  model: {config.default_llm_model()}")
@@ -662,6 +733,16 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print("\nconfig: OK, no issues found")
 
     print("\nAll checks complete.")
+    return 0
+
+
+def cmd_completion(args: argparse.Namespace) -> int:
+    try:
+        script = generate_completion(args.shell)
+    except ValueError as exc:
+        print(str(exc))
+        return 1
+    print(script, end="")
     return 0
 
 
@@ -755,6 +836,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_stress.add_argument("path", help="Path to test file or directory (passed through to pytest).")
     p_stress.add_argument("-k", default=None, help="pytest -k expression to select a specific test.")
     p_stress.add_argument("-n", type=int, default=20, help="Number of times to run (default: 20).")
+    p_stress.add_argument("--parallel", type=int, default=1, help="Number of concurrent pytest invocations (default: 1, sequential).")
     p_stress.add_argument("--analyze", action="store_true", help="Run AI root-cause analysis if flakiness is found.")
     p_stress.set_defaults(func=cmd_stress)
 
@@ -763,6 +845,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_analyze.add_argument("--source", default=None, help="Path to the test's source file, included as context (single-test mode only).")
     p_analyze.add_argument("--all", action="store_true", help="Analyze every currently flaky/broken test instead of a single one.")
     p_analyze.add_argument("--out", default=None, help="Write the consolidated Markdown results to a file (used with --all).")
+    p_analyze.add_argument("--no-cache", action="store_true", help="Skip the analysis cache and always call the LLM provider fresh.")
     p_analyze.add_argument(
         "--llm-provider", default=None, choices=[*provider_names(), "none"], help="Override the configured LLM provider."
     )
@@ -817,6 +900,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_doctor = sub.add_parser("doctor", help="Check your flakeradar setup (git, pytest, history db, LLM config).")
     p_doctor.add_argument("--live", action="store_true", help="Also make a real API call to verify LLM provider connectivity.")
     p_doctor.set_defaults(func=cmd_doctor)
+
+    p_completion = sub.add_parser("completion", help="Print a shell completion script (bash, zsh, or fish).")
+    p_completion.add_argument("shell", choices=["bash", "zsh", "fish"], help="Which shell to generate a completion script for.")
+    p_completion.set_defaults(func=cmd_completion)
 
     return parser
 
